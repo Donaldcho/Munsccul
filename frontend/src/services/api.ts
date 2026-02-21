@@ -165,6 +165,7 @@ export const reportsApi = {
   getBalanceSheet: (params?: any) => api.get('/reports/balance-sheet', { params, responseType: params?.format === 'pdf' || params?.format === 'excel' ? 'blob' : 'json' }),
   getIncomeStatement: (params?: any) => api.get('/reports/income-statement', { params, responseType: params?.format === 'pdf' || params?.format === 'excel' ? 'blob' : 'json' }),
   getParReport: (params?: any) => api.get('/reports/par', { params, responseType: params?.format === 'pdf' || params?.format === 'excel' ? 'blob' : 'json' }),
+  getDailyCashFlow: (params?: any) => api.get('/reports/daily-cash-flow', { params, responseType: params?.format === 'pdf' || params?.format === 'excel' ? 'blob' : 'json' }),
 }
 
 export const eodApi = {

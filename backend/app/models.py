@@ -88,6 +88,17 @@ class QueueStatus(str, enum.Enum):
     NO_SHOW = "NO_SHOW"
 
 
+class PaymentChannel(str, enum.Enum):
+    """Payment channels for transactions"""
+    CASH = "CASH"
+    MTN_MOMO = "MTN_MOMO"
+    ORANGE_MONEY = "ORANGE_MONEY"
+    BANK_TRANSFER = "BANK_TRANSFER"
+    BALI_CO = "BALI_CO"
+    GLOVIC = "GLOVIC"
+    MICROFINANCE_A = "MICROFINANCE_A"
+
+
 class User(Base):
     """System users (Tellers, Managers, etc.)"""
     __tablename__ = "users"
@@ -272,8 +283,12 @@ class Transaction(Base):
     # For transfers
     destination_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
     
-    # Transaction description
+    # Transaction description & Reporting
     description = Column(Text, nullable=True)
+    payment_channel = Column(Enum(PaymentChannel), default=PaymentChannel.CASH, nullable=False)
+    purpose = Column(String(50), nullable=True)  # e.g., "SAVINGS", "SHARE_CAPITAL", "SOLIDARITY_FUND"
+    external_reference = Column(String(50), nullable=True)  # Mobile Money Ref, Check No
+    comments = Column(Text, nullable=True)
     
     # Balance after transaction (for audit trail)
     balance_after = Column(Numeric(15, 2), nullable=False)

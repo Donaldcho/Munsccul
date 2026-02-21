@@ -78,7 +78,11 @@ def create_double_entry_transaction(
     credit_account_code: Optional[str],
     description: Optional[str],
     created_by: int,
-    destination_account: Optional[models.Account] = None
+    destination_account: Optional[models.Account] = None,
+    payment_channel: models.PaymentChannel = models.PaymentChannel.CASH,
+    purpose: Optional[str] = None,
+    external_reference: Optional[str] = None,
+    comments: Optional[str] = None
 ) -> models.Transaction:
     """
     Create a transaction with double-entry bookkeeping (OHADA compliant)
@@ -111,6 +115,10 @@ def create_double_entry_transaction(
         destination_account_id=destination_account.id if destination_account else None,
         balance_after=new_balance,
         description=description,
+        payment_channel=payment_channel,
+        purpose=purpose,
+        external_reference=external_reference,
+        comments=comments,
         created_by=created_by,
         created_at=datetime.utcnow()
     )
@@ -184,7 +192,11 @@ async def deposit(
         debit_account_code=teller_gl_code,
         credit_account_code="2010", # Member Savings Account (Consolidated GL)
         description=deposit_data.description or "Cash deposit",
-        created_by=current_user.id
+        created_by=current_user.id,
+        payment_channel=models.PaymentChannel(deposit_data.payment_channel.value),
+        purpose=deposit_data.purpose,
+        external_reference=deposit_data.external_reference,
+        comments=deposit_data.comments
     )
     
     # Check if approval required (Four-Eyes Principle)
@@ -349,7 +361,11 @@ async def withdrawal(
         debit_account_code="2010",  # Member Savings Account
         credit_account_code=teller_gl_code,
         description=withdrawal_data.description or "Cash withdrawal",
-        created_by=current_user.id
+        created_by=current_user.id,
+        payment_channel=models.PaymentChannel(withdrawal_data.payment_channel.value),
+        purpose=withdrawal_data.purpose,
+        external_reference=withdrawal_data.external_reference,
+        comments=withdrawal_data.comments
     )
     
     # Check if approval required (Four-Eyes Principle)

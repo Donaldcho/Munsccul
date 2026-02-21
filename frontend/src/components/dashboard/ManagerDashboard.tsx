@@ -16,6 +16,7 @@ import { formatCurrency } from '../../utils/formatters'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import LoanProductsConfig from './LoanProductsConfig'
+import * as XLSX from 'xlsx'
 
 export default function ManagerDashboard() {
     const { user } = useAuthStore()
@@ -150,6 +151,31 @@ export default function ManagerDashboard() {
         }
     }
 
+    const handleDownloadCashFlow = async () => {
+        const targetDate = prompt('Enter date (YYYY-MM-DD) or leave empty for today:', format(new Date(), 'yyyy-MM-dd'))
+        if (targetDate === null) return
+
+        try {
+            const response = await reportsApi.getDailyCashFlow({ target_date: targetDate, format: 'json' })
+            const data = response.data
+
+            // Create worksheet from matrix data
+            const ws = XLSX.utils.json_to_sheet(data)
+            const wb = XLSX.utils.book_new()
+            XLSX.utils.book_append_sheet(wb, ws, "Daily Cash Flow")
+
+            // Auto-size columns
+            const colWidths = Object.keys(data[0] || {}).map(() => ({ wch: 20 }))
+            ws['!cols'] = colWidths
+
+            // Trigger download
+            XLSX.writeFile(wb, `Daily_Cash_Flow_${targetDate}.xlsx`)
+            toast.success('Excel report generated')
+        } catch (error) {
+            toast.error('Failed to generate Excel report')
+        }
+    }
+
     return (
         <div className="space-y-6">
             <div className="flex items-center justify-between">
@@ -224,6 +250,23 @@ export default function ManagerDashboard() {
                     </div>
                     <h3 className="text-3xl font-black text-gray-900 dark:text-white">0</h3>
                     <p className="text-gray-500 dark:text-slate-400 text-[10px] font-bold mt-1">ALERTS (24H)</p>
+                </div>
+
+                {/* Daily Cash Flow Export */}
+                <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-5 rounded-2xl shadow-lg border border-indigo-400/20 flex flex-col justify-between text-white md:col-span-1">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="p-2 bg-white/20 rounded-lg">
+                            <BanknotesIcon className="h-5 w-5 text-white" />
+                        </div>
+                        <span className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Reports</span>
+                    </div>
+                    <h3 className="text-xl font-bold">Daily Cash Flow</h3>
+                    <button
+                        onClick={handleDownloadCashFlow}
+                        className="mt-4 px-4 py-2 bg-white text-indigo-600 rounded-lg text-sm font-bold hover:bg-indigo-50 transition-colors shadow-sm"
+                    >
+                        Export to Excel
+                    </button>
                 </div>
             </div>
 

@@ -254,6 +254,84 @@ class ReportingService:
         }
 
     @staticmethod
+    def generate_daily_cash_flow(db: Session, target_date: date) -> List[Dict[str, Any]]:
+        """
+        Generates the Daily Cash Flow Matrix Report.
+        Groups transactions by 'purpose' and pivots by 'payment_channel'.
+        """
+        from datetime import datetime
+        start_of_day = datetime.combine(target_date, datetime.min.time())
+        end_of_day = datetime.combine(target_date, datetime.max.time())
+
+        # 1. Fetch Transactions for the day
+        transactions = db.query(
+            models.Transaction.purpose,
+            models.Transaction.payment_channel,
+            func.sum(models.Transaction.amount).label('total_amount'),
+            func.group_concat(models.Transaction.external_reference).label('refs'),
+            func.group_concat(models.Transaction.comments).label('all_comments')
+        ).filter(
+            models.Transaction.created_at >= start_of_day,
+            models.Transaction.created_at <= end_of_day
+        ).group_by(
+            models.Transaction.purpose,
+            models.Transaction.payment_channel
+        ).all()
+
+        # 2. Map purposes to human-readable rows
+        rows_map = {}
+        for row in transactions:
+            purpose = row.purpose or "OTHER"
+            if purpose not in rows_map:
+                rows_map[purpose] = {
+                    "description": purpose.replace("_", " ").title(),
+                    "refs": "",
+                    "corp_banks": 0.0,
+                    "mf_balico": 0.0,
+                    "mf_a": 0.0,
+                    "mf_glovic": 0.0,
+                    "cash": 0.0,
+                    "mobile_om": 0.0,
+                    "mobile_mtn": 0.0,
+                    "total": 0.0,
+                    "comments": ""
+                }
+            
+            amount = float(row.total_amount)
+            channel = row.payment_channel
+            
+            # Update columns based on channel
+            if channel == models.PaymentChannel.BANK_TRANSFER: rows_map[purpose]["corp_banks"] += amount
+            elif channel == models.PaymentChannel.BALI_CO: rows_map[purpose]["mf_balico"] += amount
+            elif channel == models.PaymentChannel.MICROFINANCE_A: rows_map[purpose]["mf_a"] += amount
+            elif channel == models.PaymentChannel.GLOVIC: rows_map[purpose]["mf_glovic"] += amount
+            elif channel == models.PaymentChannel.CASH: rows_map[purpose]["cash"] += amount
+            elif channel == models.PaymentChannel.ORANGE_MONEY: rows_map[purpose]["mobile_om"] += amount
+            elif channel == models.PaymentChannel.MTN_MOMO: rows_map[purpose]["mobile_mtn"] += amount
+            
+            rows_map[purpose]["total"] += amount
+            if row.refs:
+                rows_map[purpose]["refs"] = (rows_map[purpose]["refs"] + ", " + row.refs).strip(", ")
+            if row.all_comments:
+                rows_map[purpose]["comments"] = (rows_map[purpose]["comments"] + "; " + row.all_comments).strip("; ")
+
+        # 3. Handle "Brought Forward" (Opening Balances)
+        # In a real system, this would query the previous day's closing balance.
+        # Simplified: We'll add a header row.
+        matrix = []
+        # Add BF row if exists or empty placeholder
+        matrix.append({
+            "description": "BROUGHT FORWARD BALANCES",
+            "corp_banks": 0.0, "mf_balico": 0.0, "mf_a": 0.0, "mf_glovic": 0.0, 
+            "cash": 0.0, "mobile_om": 0.0, "mobile_mtn": 0.0, "total": 0.0
+        })
+
+        for purpose in sorted(rows_map.keys()):
+            matrix.append(rows_map[purpose])
+
+        return matrix
+
+    @staticmethod
     def export_to_excel(report_name: str, data: List[Dict[str, Any]] | Dict[str, Any]) -> str:
         """
         Exports report data to an Excel file and returns the file path.
@@ -311,13 +389,43 @@ class ReportingService:
             pdf.ln()
 
             # Table Data
-            pdf.set_font('helvetica', '', 9)
+            pdf.set_font('helvetica', '', 8)
+            grand_total_debit = 0.0
+            grand_total_credit = 0.0
+
             for row in data:
+                # Track max height for the row
+                max_h = 10
+                
+                # Calculate grand totals if this is a Trial Balance
+                if "debit" in row: grand_total_debit += float(row.get("debit", 0))
+                if "credit" in row: grand_total_credit += float(row.get("credit", 0))
+
+                # Start drawing cells
                 for key in headers:
                     val = row.get(key, "")
                     if isinstance(val, float):
-                        val = f"{val:,.2f}"
-                    pdf.cell(col_width, 10, str(val)[:20], border=1)
+                        val = f"{val:,.0f}"
+                    
+                    # Implementation of text wrap using multi_cell
+                    # Remember current position to draw borders correctly
+                    x = pdf.get_x()
+                    y = pdf.get_y()
+                    pdf.multi_cell(col_width, 5, str(val), border=1, align='L')
+                    # Update max height for the row move to the next cell's start position
+                    pdf.set_xy(x + col_width, y)
+                pdf.ln(10) # Move to next line after all columns done
+
+            # Grand Totals Row
+            if "debit" in data[0] or "credit" in data[0]:
+                pdf.set_font('helvetica', 'B', 9)
+                pdf.set_fill_color(240, 243, 246)
+                pdf.cell(col_width * 3, 10, "GRAND TOTAL:", border=1, fill=True, align='R')
+                pdf.cell(col_width, 10, f"{grand_total_debit:,.0f}", border=1, fill=True)
+                pdf.cell(col_width, 10, f"{grand_total_credit:,.0f}", border=1, fill=True)
+                # Fill remaining cells
+                for _ in range(len(headers) - 5):
+                    pdf.cell(col_width, 10, "", border=1, fill=True)
                 pdf.ln()
 
         # Create temp file

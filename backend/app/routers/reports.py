@@ -177,3 +177,18 @@ async def get_par_report(
 
     data = ReportingService.generate_par_report(db, as_of_date, officer_id)
     return handle_export(format, "par_report", f"Portfolio At Risk as of {as_of_date}", data)
+
+@router.get("/daily-cash-flow")
+async def get_daily_cash_flow(
+    request: Request,
+    target_date: date = Query(default_factory=date.today),
+    format: Literal["json", "excel", "pdf"] = "json",
+    current_user: models.User = Depends(require_global_reporting_access),
+    db: Session = Depends(get_db)
+):
+    """Generate Daily Cash Flow Matrix Report"""
+    audit = AuditLogger(db, current_user, request)
+    audit.log("GENERATED_REPORT", "Report", description=f"Downloaded Daily Cash Flow ({format}) for {target_date}")
+    
+    data = ReportingService.generate_daily_cash_flow(db, target_date)
+    return handle_export(format, "daily_cash_flow", f"Daily Cash Flow Statement for {target_date}", data)

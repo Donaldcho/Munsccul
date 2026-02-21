@@ -51,6 +51,16 @@ class TransactionType(str, Enum):
     INTEREST = "INTEREST"
 
 
+class PaymentChannel(str, Enum):
+    CASH = "CASH"
+    MTN_MOMO = "MTN_MOMO"
+    ORANGE_MONEY = "ORANGE_MONEY"
+    BANK_TRANSFER = "BANK_TRANSFER"
+    BALI_CO = "BALI_CO"
+    GLOVIC = "GLOVIC"
+    MICROFINANCE_A = "MICROFINANCE_A"
+
+
 class LoanStatus(str, Enum):
     DRAFT = "DRAFT"
     PENDING_REVIEW = "PENDING_REVIEW"
@@ -276,13 +286,21 @@ class TransactionBase(BaseModel):
 class DepositRequest(BaseModel):
     account_id: int
     amount: Decimal = Field(..., gt=0)
+    payment_channel: PaymentChannel = PaymentChannel.CASH
+    purpose: str = "SAVINGS"
+    external_reference: Optional[str] = None
     description: Optional[str] = None
+    comments: Optional[str] = None
 
 
 class WithdrawalRequest(BaseModel):
     account_id: int
     amount: Decimal = Field(..., gt=0)
+    payment_channel: PaymentChannel = PaymentChannel.CASH
+    purpose: str = "SAVINGS"
+    external_reference: Optional[str] = None
     description: Optional[str] = None
+    comments: Optional[str] = None
 
 
 class TransferRequest(BaseModel):
@@ -307,6 +325,10 @@ class TransactionResponse(BaseModel):
     currency: str
     balance_after: Decimal
     description: Optional[str]
+    payment_channel: PaymentChannel
+    purpose: Optional[str]
+    external_reference: Optional[str]
+    comments: Optional[str]
     created_by: int
     approved_by: Optional[int]
     approved_at: Optional[datetime]
