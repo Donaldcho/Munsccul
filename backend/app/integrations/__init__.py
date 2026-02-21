@@ -1,0 +1,1 @@
+# Integrations Module - External service integrations (MTN/Orange MoMo, SMS, etc.)
