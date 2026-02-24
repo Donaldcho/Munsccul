@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3000,
+    allowedHosts: ['.ngrok-free.app'],
     proxy: {
       '/api': {
         target: process.env.VITE_API_PROXY_TARGET || 'http://backend:8000',

@@ -227,6 +227,7 @@ async def list_users(
     role: Optional[str] = None,
     branch_id: Optional[int] = None,
     is_active: Optional[bool] = None,
+    approval_status: Optional[models.UserApprovalStatus] = None,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -244,6 +245,9 @@ async def list_users(
     
     if is_active is not None:
         query = query.filter(models.User.is_active == is_active)
+        
+    if approval_status is not None:
+        query = query.filter(models.User.approval_status == approval_status)
     
     users = query.offset(skip).limit(limit).all()
     

@@ -20,6 +20,8 @@ from app.security.middleware import (
     AuditLoggingMiddleware,
     get_cors_config
 )
+from app.middleware.eod_lockout import EODLockoutMiddleware
+from app.websocket_manager import ws_manager
 from app.routers import (
     auth as auth_router_mod,
     auth_enhanced as auth_enhanced_mod,  # Enhanced auth with refresh tokens
@@ -33,7 +35,8 @@ from app.routers import (
     mobile_money,
     teller,
     eod,
-    queue
+    queue,
+    njangi
 )
 
 # Configure logging
@@ -161,7 +164,10 @@ app.add_middleware(TimingMiddleware)
 # 5. Security headers middleware (OWASP-compliant)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 6. CORS middleware
+# 6. EOD Lockout middleware (Blocks financial ops during closure)
+app.add_middleware(EODLockoutMiddleware)
+
+# 7. CORS middleware
 cors_config = get_cors_config()
 if settings.DEBUG:
     cors_config["allow_origins"] = ["*"]
@@ -211,6 +217,7 @@ app.include_router(mobile_money.router, prefix="/api/v1")  # Mobile Money integr
 app.include_router(teller.router, prefix="/api/v1")  # Teller Operations
 app.include_router(eod.router, prefix="/api/v1")  # End of Day Operations
 app.include_router(queue.router, prefix="/api/v1")  # Queue Management System
+app.include_router(njangi.router, prefix="/api/v1")  # Smart Njangi (Tontine)
 
 # Health check endpoint
 @app.get("/health", tags=["Health"])
@@ -237,22 +244,20 @@ async def root():
 
 # Dedicated WebSocket endpoint for QMS TV Display
 # Placed at root to avoid router prefixing issues
-@app.websocket("/ws/display/{branch_id}")
-async def websocket_display_endpoint(websocket: WebSocket, branch_id: int):
-    from app.routers.queue import manager, broadcast_queue_state
-    from app.database import SessionLocal
-    
-    await manager.connect(websocket)
-    db = SessionLocal()
+@app.websocket("/ws/branch/{branch_id}")
+async def websocket_branch_endpoint(websocket: WebSocket, branch_id: int):
+    """
+    Unified WebSocket endpoint for branch-specific alerts (Overrides, Queue, Alerts)
+    """
+    await ws_manager.connect(websocket, branch_id)
     try:
-        await broadcast_queue_state(db, branch_id)
         while True:
+            # Keep connection alive and listen for optional pings
             await websocket.receive_text()
     except Exception as e:
-        print(f"WS Error: {e}")
+        logger.error(f"WS Error in branch {branch_id}: {e}")
     finally:
-        manager.disconnect(websocket)
-        db.close()
+        ws_manager.disconnect(websocket, branch_id)
 
 
 # System info endpoint

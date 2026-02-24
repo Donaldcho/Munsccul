@@ -4,21 +4,22 @@ Implements refresh token pattern with rotation, secure cookie handling
 """
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, Dict, Any
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 import secrets
 import hashlib
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app import models
 
-# Password hashing with bcrypt - Fineract standard
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto",
-    bcrypt__rounds=12  # Fineract-compliant cost factor
-)
+# Password hashing with bcrypt - Direct implementation for Python 3.13 compatibility
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 
 class TokenManager:
@@ -183,12 +184,12 @@ class PasswordManager:
     @classmethod
     def hash_password(cls, password: str) -> str:
         """Hash password using bcrypt"""
-        return pwd_context.hash(password)
+        return hash_password(password)
     
     @classmethod
     def verify_password(cls, plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash"""
-        return pwd_context.verify(plain_password, hashed_password)
+        return verify_password(plain_password, hashed_password)
     
     @classmethod
     def validate_password_strength(cls, password: str) -> Tuple[bool, str]:

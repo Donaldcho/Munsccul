@@ -11,6 +11,7 @@ from sqlalchemy.sql import func
 from app.database import Base
 import enum
 from datetime import datetime
+from decimal import Decimal
 
 
 class UserRole(str, enum.Enum):
@@ -23,6 +24,20 @@ class UserRole(str, enum.Enum):
     OPS_DIRECTOR = "OPS_DIRECTOR"
     BOARD_MEMBER = "BOARD_MEMBER"
     AUDITOR = "AUDITOR"
+
+
+class BranchStatus(str, enum.Enum):
+    """Branch operational status"""
+    OPEN = "OPEN"
+    EOD_IN_PROGRESS = "EOD_IN_PROGRESS"
+    CLOSED = "CLOSED"
+
+
+class OverrideStatus(str, enum.Enum):
+    """Status of a manager override request"""
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class AccountType(str, enum.Enum):
@@ -43,6 +58,8 @@ class TransactionType(str, enum.Enum):
     LOAN_REPAYMENT = "LOAN_REPAYMENT"
     FEE = "FEE"
     INTEREST = "INTEREST"
+    NJANGI_CONTRIBUTION = "NJANGI_CONTRIBUTION"
+    NJANGI_PAYOUT = "NJANGI_PAYOUT"
 
 
 class LoanStatus(str, enum.Enum):
@@ -99,6 +116,50 @@ class PaymentChannel(str, enum.Enum):
     MICROFINANCE_A = "MICROFINANCE_A"
 
 
+class CycleInterval(str, enum.Enum):
+    """Njangi cycle frequency"""
+    WEEKLY = "WEEKLY"
+    BI_WEEKLY = "BI_WEEKLY"
+    MONTHLY = "MONTHLY"
+
+
+class NjangiGroupStatus(str, enum.Enum):
+    """Njangi group operational status"""
+    DRAFT = "DRAFT"
+    PENDING_KYC = "PENDING_KYC"
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+    DISSOLVED = "DISSOLVED"
+
+
+class CycleStatus(str, enum.Enum):
+    """Status of a specific Njangi round"""
+    COLLECTING = "COLLECTING"
+    READY_FOR_PAYOUT = "READY_FOR_PAYOUT"
+    COMPLETED = "COMPLETED"
+
+
+class ContributionStatus(str, enum.Enum):
+    """Status of a member's contribution to a cycle"""
+    PAID_ON_TIME = "PAID_ON_TIME"
+    PAID_LATE = "PAID_LATE"
+    MISSED = "MISSED"
+
+
+class PayoutStatus(str, enum.Enum):
+    """Status of a Njangi pot disbursement"""
+    PENDING = "PENDING"
+    DISBURSED = "DISBURSED"
+    FAILED = "FAILED"
+
+
+class InsightType(str, enum.Enum):
+    """Types of AI insights for Njangi management"""
+    DEFAULT_WARNING = "DEFAULT_WARNING"
+    STREAK_ACHIEVEMENT = "STREAK_ACHIEVEMENT"
+    LIQUIDITY_RISK = "LIQUIDITY_RISK"
+
+
 class User(Base):
     """System users (Tellers, Managers, etc.)"""
     __tablename__ = "users"
@@ -112,6 +173,11 @@ class User(Base):
     branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     last_login = Column(DateTime, nullable=True)
+    is_first_login = Column(Boolean, default=True)
+    
+    # PIN Reset Flow
+    pin_reset_token = Column(String(100), nullable=True)
+    pin_reset_token_expiry = Column(DateTime, nullable=True)
     
     # IAM & Maker-Checker
     approval_status = Column(Enum(UserApprovalStatus), default=UserApprovalStatus.PENDING)
@@ -123,6 +189,7 @@ class User(Base):
     teller_cash_limit = Column(Numeric(15, 2), default=1000000.00)
     teller_gl_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
     teller_pin = Column(String(255), nullable=True)
+    counter_number = Column(String(20), nullable=True)  # Counter or terminal assignment
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -155,6 +222,12 @@ class Branch(Base):
     # Security & Finance
     server_api_key = Column(String(64), unique=True, nullable=True)  # Secret API key for branch server
     gl_vault_code = Column(String(20), nullable=True)  # GL Account code for Vault Cash
+    
+    # Dashboard & Ops
+    status = Column(Enum(BranchStatus), default=BranchStatus.OPEN, nullable=False)
+    vault_cash_limit = Column(Numeric(18, 2), default=15000000.00)
+    mtn_float = Column(Numeric(18, 2), default=0.00)
+    orange_float = Column(Numeric(18, 2), default=0.00)
     
     created_at = Column(DateTime, server_default=func.now())
     
@@ -209,6 +282,12 @@ class Member(Base):
     # Account metadata
     branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False)
     registered_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Behavioral Economics (Njangi Integration)
+    trust_score = Column(Numeric(5, 2), default=50.00)
+    on_time_streak = Column(Integer, default=0)
+    ai_default_risk_flag = Column(Boolean, default=False)
+    
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -348,6 +427,32 @@ class DailyClosure(Base):
     closer = relationship("User", foreign_keys=[closed_by])
 
 
+class TransactionOverride(Base):
+    """Manager overrides for teller transactions exceeding limits"""
+    __tablename__ = "transaction_overrides"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    teller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False)
+    
+    amount = Column(Numeric(18, 2), nullable=False)
+    transaction_type = Column(String(20), nullable=False)
+    member_id = Column(Integer, ForeignKey("members.id"), nullable=True)
+    
+    status = Column(Enum(OverrideStatus), default=OverrideStatus.PENDING)
+    requested_at = Column(DateTime, server_default=func.now())
+    responded_at = Column(DateTime, nullable=True)
+    
+    manager_comments = Column(String(255), nullable=True)
+    
+    # Relationships
+    teller = relationship("User", foreign_keys=[teller_id])
+    manager = relationship("User", foreign_keys=[manager_id])
+    branch = relationship("Branch")
+    member = relationship("Member")
+
+
 class LoanProduct(Base):
     """Configurable loan products"""
     __tablename__ = "loan_products"
@@ -386,6 +491,7 @@ class Loan(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     loan_number = Column(String(20), unique=True, nullable=False, index=True)
+    purpose = Column(String(100), nullable=True)
     
     member_id = Column(Integer, ForeignKey("members.id"), nullable=False)
     product_id = Column(Integer, ForeignKey("loan_products.id"), nullable=False)
@@ -1440,3 +1546,144 @@ class TellerReconciliation(Base):
     teller = relationship("User", foreign_keys=[teller_id])
     reviewer = relationship("User", foreign_keys=[reviewed_by])
     branch = relationship("Branch")
+
+
+class NjangiGroup(Base):
+    """Njangi (Tontine) Group - Informal Savings digitization"""
+    __tablename__ = "njangi_groups"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    
+    contribution_amount = Column(Numeric(15, 2), nullable=False)
+    cycle_frequency = Column(Enum(CycleInterval), default=CycleInterval.MONTHLY)
+    
+    # The escrow GL account where funds are safely held
+    escrow_gl_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    
+    president_id = Column(Integer, ForeignKey("members.id"), nullable=False)
+    status = Column(Enum(NjangiGroupStatus), default=NjangiGroupStatus.DRAFT)
+    
+    # KYC & AML Compliance Documents (OHADA)
+    bylaws_url = Column(String(255), nullable=True)
+    meeting_minutes_url = Column(String(255), nullable=True)
+    executive_signatories = Column(Text, nullable=True)  # JSON holding President, Secretary, Treasurer details
+    
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Relationships
+    memberships = relationship("NjangiMembership", back_populates="group")
+    cycles = relationship("NjangiCycle", back_populates="group")
+    escrow_account = relationship("Account")
+    president = relationship("Member", foreign_keys=[president_id])
+
+
+class NjangiMembership(Base):
+    """Junction between Member and NjangiGroup with behavioral metrics"""
+    __tablename__ = "njangi_memberships"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("njangi_groups.id"), nullable=False)
+    member_id = Column(Integer, ForeignKey("members.id"), nullable=False)
+    
+    payout_order = Column(Integer) # The order in which they receive the pot
+    on_time_streak = Column(Integer, default=0)
+    trust_score = Column(Numeric(5, 2), default=50.00)
+    ai_default_risk_flag = Column(Boolean, default=False)
+    
+    joined_at = Column(DateTime, server_default=func.now())
+    is_active = Column(Boolean, default=True)
+    
+    # Relationships
+    group = relationship("NjangiGroup", back_populates="memberships")
+    member = relationship("Member")
+
+
+class NjangiCycle(Base):
+    """A specific "round" of the Njangi"""
+    __tablename__ = "njangi_cycles"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("njangi_groups.id"), nullable=False)
+    cycle_number = Column(Integer, nullable=False)
+    
+    recipient_member_id = Column(Integer, ForeignKey("members.id"), nullable=False)
+    
+    start_date = Column(DateTime, nullable=False)
+    due_date = Column(DateTime, nullable=False)
+    
+    pot_target_amount = Column(Numeric(15, 2), nullable=False)
+    current_pot_amount = Column(Numeric(15, 2), default=0)
+    
+    status = Column(Enum(CycleStatus), default=CycleStatus.COLLECTING)
+    
+    # Relationships
+    group = relationship("NjangiGroup", back_populates="cycles")
+    recipient = relationship("Member")
+    contributions = relationship("NjangiContribution", back_populates="cycle")
+    payout = relationship("NjangiPayout", back_populates="cycle", uselist=False)
+
+
+class NjangiContribution(Base):
+    """Individual payments towards a Njangi cycle"""
+    __tablename__ = "njangi_contributions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey("njangi_cycles.id"), nullable=False)
+    member_id = Column(Integer, ForeignKey("members.id"), nullable=False)
+    
+    amount_paid = Column(Numeric(15, 2), nullable=False)
+    payment_channel = Column(Enum(PaymentChannel), default=PaymentChannel.CASH)
+    
+    status = Column(Enum(ContributionStatus), default=ContributionStatus.PAID_ON_TIME)
+    
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Relationships
+    cycle = relationship("NjangiCycle", back_populates="contributions")
+    member = relationship("Member")
+    transaction = relationship("Transaction")
+
+
+class NjangiPayout(Base):
+    """The automated disbursement from the Njangi Escrow to a Member wallet"""
+    __tablename__ = "njangi_payouts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey("njangi_cycles.id"), nullable=False)
+    recipient_member_id = Column(Integer, ForeignKey("members.id"), nullable=False)
+    
+    amount_disbursed = Column(Numeric(15, 2), nullable=False)
+    destination_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    
+    status = Column(Enum(PayoutStatus), default=PayoutStatus.PENDING)
+    
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)
+    disbursed_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    cycle = relationship("NjangiCycle", back_populates="payout")
+    recipient = relationship("Member")
+    destination_account = relationship("Account")
+    transaction = relationship("Transaction")
+
+
+class NjangiAIInsight(Base):
+    """AI-powered secretarial alerts for Njangi risk management"""
+    __tablename__ = "njangi_ai_insights"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("njangi_groups.id"), nullable=False)
+    member_id = Column(Integer, ForeignKey("members.id"), nullable=True)
+    
+    insight_type = Column(Enum(InsightType))
+    message = Column(Text, nullable=False)
+    
+    is_acknowledged = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Relationships
+    group = relationship("NjangiGroup")
+    member = relationship("Member")

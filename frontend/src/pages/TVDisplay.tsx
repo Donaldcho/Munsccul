@@ -16,12 +16,35 @@ export default function TVDisplay() {
     const ws = useRef<WebSocket | null>(null)
     const audioRef = useRef<HTMLAudioElement | null>(null)
 
+    const [audioEnabled, setAudioEnabled] = useState(false)
+
     useEffect(() => {
-        connect()
+        if (audioEnabled) {
+            connect()
+        }
         return () => {
             if (ws.current) ws.current.close()
         }
-    }, [])
+    }, [audioEnabled])
+
+    const handleEnableAudio = () => {
+        setAudioEnabled(true)
+
+        // Unlock Web Audio API
+        try {
+            const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+            audioContext.resume()
+        } catch (e) {
+            console.error('Failed to unlock audio context', e)
+        }
+
+        // Unlock Speech Synthesis
+        if (window.speechSynthesis) {
+            const utterance = new SpeechSynthesisUtterance('')
+            utterance.volume = 0
+            window.speechSynthesis.speak(utterance)
+        }
+    }
 
     const connect = () => {
         // Hardcoded branch_id 1 for now as per the UI
@@ -113,6 +136,21 @@ export default function TVDisplay() {
         if (preferredVoice) utterance.voice = preferredVoice
 
         window.speechSynthesis.speak(utterance)
+    }
+
+    if (!audioEnabled) {
+        return (
+            <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white font-sans">
+                <button
+                    onClick={handleEnableAudio}
+                    className="p-10 bg-primary-600 rounded-[3rem] shadow-2xl shadow-primary-500/20 hover:bg-primary-500 transition-all flex flex-col items-center group cursor-pointer transform hover:scale-105"
+                >
+                    <MegaphoneIcon className="h-24 w-24 mb-6 text-white group-hover:animate-bounce" />
+                    <h2 className="text-4xl font-black tracking-tight">START TV DISPLAY</h2>
+                    <p className="text-primary-200 mt-4 text-lg">Click anywhere on this card to enable Audio & Voice</p>
+                </button>
+            </div>
+        )
     }
 
     return (

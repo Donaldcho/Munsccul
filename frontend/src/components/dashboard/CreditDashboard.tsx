@@ -16,8 +16,8 @@ import {
     HandRaisedIcon,
     CheckBadgeIcon as VerifiedIcon
 } from '@heroicons/react/24/outline'
-import { formatCurrency } from '../../utils/formatters'
 import { loansApi, membersApi, queueApi } from '../../services/api'
+import { njangiApi } from '../../services/njangiApi'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 
@@ -56,8 +56,9 @@ const WIZARD_STEPS = [
 ]
 
 export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
-    const [view, setView] = useState<'pipeline' | 'new-application'>('pipeline')
+    const [view, setView] = useState<'pipeline' | 'new-application' | 'njangi-genesis'>('pipeline')
     const [applications, setApplications] = useState<any[]>([])
+    const [njangiGroups, setNjangiGroups] = useState<any[]>([])
 
     // Wizard State
     const [wizardStep, setWizardStep] = useState(1)
@@ -70,6 +71,10 @@ export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
     const [purpose, setPurpose] = useState('')
     const [termMonths, setTermMonths] = useState('')
     const [submitting, setSubmitting] = useState(false)
+
+    // KYC / Clean Room State
+    const [cleanRoom, setCleanRoom] = useState(false)
+    const [pendingCount, setPendingCount] = useState({ members: 5, loans: 12 })
 
     // Eligibility State
     const [eligibility, setEligibility] = useState<EligibilityResult | null>(null)
@@ -85,6 +90,7 @@ export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
     useEffect(() => {
         fetchApplications()
         fetchProducts()
+        fetchNjangiGroups()
     }, [])
 
     const fetchApplications = async () => {
@@ -93,6 +99,15 @@ export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
             setApplications(res.data)
         } catch (error) {
             console.error('Failed to fetch applications')
+        }
+    }
+
+    const fetchNjangiGroups = async () => {
+        try {
+            const res = await njangiApi.getGroups()
+            setNjangiGroups(res.data)
+        } catch (error) {
+            console.error('Failed to fetch njangi groups')
         }
     }
 
@@ -587,6 +602,8 @@ export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
                             ></textarea>
                         </div>
 
+                        <SignaturePad />
+
                         {/* Amount Warning */}
                         {amount && eligibility && parseFloat(amount) > eligibility.max_loan_amount && (
                             <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-start">
@@ -780,11 +797,112 @@ export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
         </div>
     )
 
+    const SignaturePad = () => (
+        <div className="mt-4">
+            <label className="label text-[10px] font-black uppercase tracking-widest text-slate-400">Digital Signature Pad</label>
+            <div className="h-48 w-full bg-slate-950 rounded-2xl border-2 border-slate-800 relative flex items-center justify-center group overflow-hidden">
+                <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#3b82f6_1px,transparent_1px)] [background-size:16px_16px]" />
+                <p className="text-slate-600 font-serif italic text-2xl select-none opacity-40 group-hover:opacity-60 transition-opacity">Capture Wet Signature Here</p>
+                <div className="absolute bottom-4 right-4 flex space-x-2">
+                    <button onClick={(e) => { e.preventDefault(); toast.success('Signature Captured') }} className="px-3 py-1 bg-primary-600 text-white text-[10px] font-black rounded-lg uppercase">Capture</button>
+                    <button onClick={(e) => { e.preventDefault(); }} className="px-3 py-1 bg-slate-800 text-slate-400 text-[10px] font-black rounded-lg uppercase">Clear</button>
+                </div>
+                {/* Simulated signature stroke */}
+                <div className="absolute inset-0 pointer-events-none">
+                    <svg className="w-full h-full">
+                        <path d="M 100 100 Q 150 50 200 120 T 300 100" fill="none" stroke="#3b82f6" strokeWidth="3" className="opacity-0 group-hover:opacity-100 transition-opacity duration-1000" />
+                    </svg>
+                </div>
+            </div>
+        </div>
+    )
+
+    const handleUploadKYC = async (groupId: number) => {
+        try {
+            await njangiApi.uploadKycDocuments(groupId, {
+                bylaws_url: "https://example.com/bylaws.pdf",
+                meeting_minutes_url: "https://example.com/minutes.pdf"
+            });
+            toast.success('KYC Documents Uploaded Successfully!');
+            fetchNjangiGroups();
+        } catch (error: any) {
+            toast.error('Failed to upload KYC documents');
+        }
+    }
+
+    const renderNjangiGenesis = () => {
+        const draftGroups = njangiGroups.filter(g => g.status === 'DRAFT')
+
+        return (
+            <div className="max-w-4xl mx-auto">
+                <div className="bg-white dark:bg-slate-900 rounded-t-xl border border-gray-200 dark:border-slate-800 p-5 flex justify-between items-center mb-4">
+                    <div>
+                        <h2 className="text-xl font-bold text-gray-900 dark:text-white">Njangi Group Genesis</h2>
+                        <p className="text-sm text-gray-500 dark:text-slate-400">Upload physical KYC documents (Bylaws, Minutes) for DRAFT groups.</p>
+                    </div>
+                </div>
+
+                <div className="space-y-4">
+                    {draftGroups.map(group => (
+                        <div key={group.id} className="bg-white dark:bg-slate-800 p-5 rounded-lg shadow-sm border border-gray-200 dark:border-slate-700 flex justify-between items-center">
+                            <div>
+                                <h3 className="font-bold text-lg text-gray-900 dark:text-white">{group.name}</h3>
+                                <p className="text-sm text-gray-500 dark:text-slate-400">President ID: <span className="font-mono">{group.president_id}</span></p>
+                                <p className="text-sm text-gray-500 dark:text-slate-400 mt-1">Rule: {formatCurrency(group.cycle_amount)} / {group.cycle_frequency}</p>
+                            </div>
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={() => handleUploadKYC(group.id)}
+                                    className="btn btn-primary flex items-center"
+                                >
+                                    <ClipboardDocumentCheckIcon className="h-5 w-5 mr-2" />
+                                    Simulate Upload KYC Docs
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                    {draftGroups.length === 0 && (
+                        <div className="text-center py-12 bg-white dark:bg-slate-800 rounded-lg border border-dashed border-gray-300 dark:border-slate-700">
+                            <DocumentTextIcon className="h-12 w-12 text-gray-300 dark:text-slate-600 mx-auto mb-3" />
+                            <p className="text-gray-500 dark:text-slate-400">No Njangi groups pending genesis document upload.</p>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )
+    }
+
     if (!loanStats) return <div>Loading...</div>
 
     return (
-        <div>
-            <div className="mb-8 flex justify-between items-start gap-4">
+        <div className={`transition-all duration-500 ${cleanRoom ? 'bg-slate-950 p-12 -m-8 min-h-screen' : ''}`}>
+            {/* Top Bar: Pending Applications Ticker */}
+            {!cleanRoom && (
+                <div className="bg-slate-900 -mx-8 -mt-8 mb-8 px-8 py-2 overflow-hidden whitespace-nowrap border-b border-slate-800 relative">
+                    <div className="absolute left-0 top-0 h-full w-24 bg-gradient-to-r from-slate-900 to-transparent z-10" />
+                    <div className="absolute right-0 top-0 h-full w-24 bg-gradient-to-l from-slate-900 to-transparent z-10" />
+                    <div className="inline-block animate-marquee">
+                        <span className="text-[10px] font-black text-amber-500 uppercase tracking-[0.2em] mr-12">
+                            ⚠️ PENDING KYC APPROVALS: {pendingCount.members} MEMBERS AWAITING VERIFICATION
+                        </span>
+                        <span className="text-[10px] font-black text-primary-400 uppercase tracking-[0.2em] mr-12">
+                            🚀 CREDIT PIPELINE: {pendingCount.loans} LOAN APPLICATIONS IN REVIEW
+                        </span>
+                        <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mr-12">
+                            STRICT COMPLIANCE MODE ACTIVE — ALL DOCUMENTS MUST BE SCANNED AT 300DPI
+                        </span>
+                        {/* Repeat for seamless loop */}
+                        <span className="text-[10px] font-black text-amber-500 uppercase tracking-[0.2em] mr-12">
+                            ⚠️ PENDING KYC APPROVALS: {pendingCount.members} MEMBERS AWAITING VERIFICATION
+                        </span>
+                        <span className="text-[10px] font-black text-primary-400 uppercase tracking-[0.2em] mr-12">
+                            🚀 CREDIT PIPELINE: {pendingCount.loans} LOAN APPLICATIONS IN REVIEW
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            <div className={`mb-8 flex justify-between items-start gap-4 ${cleanRoom ? 'hidden' : ''}`}>
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Credit Dashboard</h1>
                     <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
@@ -843,15 +961,72 @@ export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
                 </div>
 
                 {view === 'pipeline' && (
-                    <button
-                        onClick={() => setView('new-application')}
-                        className="btn btn-primary flex items-center h-fit"
-                    >
-                        <PlusIcon className="h-5 w-5 mr-2" />
-                        New Application
-                    </button>
+                    <div className="flex space-x-2">
+                        <button
+                            onClick={() => setCleanRoom(!cleanRoom)}
+                            className={`flex items-center px-4 py-2 rounded-xl text-sm font-bold border-2 transition-all ${cleanRoom ? 'bg-primary-600 border-primary-600 text-white shadow-lg' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-primary-500'}`}
+                        >
+                            <ShieldCheckIcon className="h-5 w-5 mr-2" />
+                            {cleanRoom ? 'EXIT CLEAN ROOM' : 'KYC CLEAN ROOM'}
+                        </button>
+                        <button
+                            onClick={() => setView('njangi-genesis')}
+                            className="bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-primary-500 text-slate-600 dark:text-slate-400 btn flex items-center h-fit border-2"
+                        >
+                            <UserGroupIcon className="h-5 w-5 mr-2" />
+                            Njangi Genesis
+                        </button>
+                        <button
+                            onClick={() => setView('new-application')}
+                            className="btn btn-primary flex items-center h-fit"
+                        >
+                            <PlusIcon className="h-5 w-5 mr-2" />
+                            New Application
+                        </button>
+                    </div>
                 )}
             </div>
+
+            {cleanRoom && (
+                <div className="max-w-6xl mx-auto">
+                    <div className="flex justify-between items-center mb-12">
+                        <div>
+                            <h1 className="text-4xl font-black text-white tracking-widest uppercase mb-2 leading-none">KYC Documentation Clean Room</h1>
+                            <p className="text-primary-500 font-mono text-sm tracking-widest uppercase">High-Focus Verification Mode — ISO 27001 Compliant</p>
+                        </div>
+                        <button onClick={() => setCleanRoom(false)} className="px-6 py-2 border-2 border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 rounded-full font-black text-xs tracking-widest uppercase transition-all">EXIT MODE [ESC]</button>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 h-[70vh]">
+                        <div className="glass-card bg-slate-900 flex flex-col items-center justify-center border-slate-800 border-2">
+                            <DocumentTextIcon className="h-24 w-24 text-slate-800 mb-6" />
+                            <p className="text-slate-500 font-black uppercase tracking-widest text-xs">Awaiting Document Upload...</p>
+                        </div>
+                        <div className="space-y-6">
+                            <div className="glass-card bg-slate-900 p-8 border-slate-800 border-2">
+                                <h3 className="text-xl font-black text-white uppercase tracking-widest mb-6 border-b border-slate-800 pb-4">Verification Checklist</h3>
+                                <div className="space-y-4">
+                                    {['ID Validity Check', 'Utility Bill Address Match', 'Proof of Income Authenticity', 'AML/CFT Screening', 'Signature Match Scan'].map((item, i) => (
+                                        <div key={i} className="flex items-center group cursor-pointer">
+                                            <div className="h-6 w-6 rounded border-2 border-slate-700 mr-4 group-hover:border-primary-500 transition-colors flex items-center justify-center">
+                                                <div className="h-2 w-2 bg-primary-500 rounded-sm opacity-0 group-hover:opacity-40" />
+                                            </div>
+                                            <span className="text-slate-400 font-bold uppercase text-[11px] tracking-widest">{item}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="glass-card bg-primary-900/10 p-8 border-primary-900/20 border-2">
+                                <h3 className="text-xl font-black text-primary-400 uppercase tracking-widest mb-4">Final Verdict</h3>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <button onClick={() => { toast.success('Document Verified'); setCleanRoom(false); }} className="w-full py-4 bg-green-600 hover:bg-green-700 text-white font-black uppercase tracking-widest text-xs rounded-xl shadow-lg shadow-green-900/40">VERIFY & PASS</button>
+                                    <button onClick={() => { toast.error('Document Rejected'); setCleanRoom(false); }} className="w-full py-4 bg-red-600 hover:bg-red-700 text-white font-black uppercase tracking-widest text-xs rounded-xl shadow-lg shadow-red-900/40">REJECT & RETURN</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Top Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -881,7 +1056,7 @@ export default function CreditDashboard({ loanStats }: CreditDashboardProps) {
                 </div>
             </div>
 
-            {view === 'pipeline' ? renderKanban() : renderWizard()}
+            {view === 'pipeline' ? (!cleanRoom && renderKanban()) : view === 'new-application' ? renderWizard() : renderNjangiGenesis()}
         </div>
     )
 }

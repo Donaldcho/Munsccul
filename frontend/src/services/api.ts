@@ -9,6 +9,7 @@ export const api = axios.create({
   baseURL: API_URL,
   headers: {
     'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true',
   },
   timeout: 30000, // 30 seconds timeout for slow connections
 })
@@ -154,6 +155,7 @@ export const loansApi = {
   deactivateProduct: (id: string | number) => api.put(`/loans/products/${id}/deactivate`, {}),
   getStats: () => api.get('/loans/stats/portfolio'),
   checkEligibility: (memberId: number) => api.get(`/loans/eligibility/${memberId}`),
+  getDossier: (id: number) => api.get(`/loans/applications/${id}/dossier`),
 }
 
 export const reportsApi = {
@@ -166,11 +168,30 @@ export const reportsApi = {
   getIncomeStatement: (params?: any) => api.get('/reports/income-statement', { params, responseType: params?.format === 'pdf' || params?.format === 'excel' ? 'blob' : 'json' }),
   getParReport: (params?: any) => api.get('/reports/par', { params, responseType: params?.format === 'pdf' || params?.format === 'excel' ? 'blob' : 'json' }),
   getDailyCashFlow: (params?: any) => api.get('/reports/daily-cash-flow', { params, responseType: params?.format === 'pdf' || params?.format === 'excel' ? 'blob' : 'json' }),
+  getBoardMetrics: () => api.get('/reports/board/metrics'),
+  getSummaryPack: (params?: any) => api.get('/reports/summary-pack', { params }),
 }
 
 export const eodApi = {
   getStatus: (params?: any) => api.get('/eod/status', { params }),
-  start: (data?: any) => api.post('/eod/start', data),
+  accrueInterest: (params?: any) => api.post('/eod/accrue', {}, { params }),
+  finalize: (params?: any) => api.post('/eod/finalize', {}, { params }),
+}
+
+export const opsApi = {
+  getOverrideRequests: (params?: any) => api.get('/transactions/overrides/pending', { params }),
+  approveOverride: (id: number, data: { manager_pin: string }) => api.post(`/transactions/overrides/${id}/approve`, data),
+  rejectOverride: (id: number) => api.post(`/transactions/overrides/${id}/reject`),
+  getLiquidity: (branchId: number) => api.get(`/branches/${branchId}/stats/liquidity`),
+  getAmlFlags: (params?: any) => api.get('/reports/audit-logs', { params: { ...params, category: 'AML' } }),
+  getEodLockStatus: (params?: any) => api.get('/eod/status', { params }),
+  vaultDropByManager: (data: any) => api.post('/branches/vault-drop', data),
+  /** Backend endpoint: GET /ws/branch/{branch_id} — no auth; use this URL only. */
+  getOpsInboxWebSocketUrl: (branchId: number) => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    return `${protocol}//${host}/ws/branch/${branchId}`;
+  },
 }
 
 export const branchesApi = {
@@ -187,6 +208,15 @@ export const usersApi = {
   create: (data: any) => api.post('/auth/users', data),
   update: (id: string | number, data: any) => api.put(`/auth/users/${id}`, data),
   approve: (id: string | number, data: any) => api.put(`/auth/users/${id}/approve`, data),
+  triggerPinReset: (id: string | number) => api.post(`/auth/users/${id}/trigger-pin-reset`),
+}
+
+export const authApi = {
+  login: (data: any) => api.post('/auth/login', data),
+  setupOnboarding: (data: any) => api.post('/auth/setup-onboarding', data),
+  updatePin: (data: any) => api.post('/auth/update-pin', data),
+  resetPinConfirm: (data: any) => api.post('/auth/reset-pin-confirm', data),
+  changePassword: (data: any) => api.post('/auth/change-password', data),
 }
 
 export const queueApi = {
@@ -199,7 +229,7 @@ export const queueApi = {
   getWebSocketUrl: () => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const path = "/ws/display";
+    const path = "/ws/branch";
     return protocol + "//" + host + path;
   },
 }

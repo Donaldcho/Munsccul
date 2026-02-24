@@ -6,10 +6,10 @@ def update_passwords():
     db = SessionLocal()
     try:
         users = db.query(User).all()
-        # Default password for all users is username + '123' or just 'admin123'
-        # Let's set 'admin123' for admin and similar patterns for others
+        # Default password for all users is 'digital2026'
+        # Let's set 'digital2026' for all users
         # Or just use the hash we know is correct.
-        new_hash = PasswordManager.hash_password("admin123")
+        new_hash = PasswordManager.hash_password("digital2026")
         
         for user in users:
             user.hashed_password = new_hash

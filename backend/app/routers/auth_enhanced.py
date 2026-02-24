@@ -1,8 +1,9 @@
 """
-Enhanced Authentication Router - Fineract-compliant Security
-Implements refresh token rotation, brute force protection, and 2FA
+Enhanced Authentication Router
 """
-from datetime import timedelta
+
+from datetime import datetime, timedelta
+import secrets
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import HTTPBearer
@@ -18,7 +19,7 @@ from app.security.jwt_auth import (
 from app.security.permissions import PermissionChecker, Permission
 from app.audit import AuditLogger, get_client_ip
 from app import models, schemas
-from app.auth import get_current_user
+from app.auth import get_current_user, require_admin, require_ops_manager
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
@@ -154,6 +155,125 @@ async def login(
         user=schemas.UserResponse.model_validate(user),
         requires_2fa=False
     )
+
+@router.post("/setup-onboarding")
+async def setup_onboarding(
+    request: Request,
+    setup_data: schemas.OnboardingSetupRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Forced setup for first-time login: set new password and initial PIN.
+    """
+    if not current_user.is_first_login:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Onboarding already completed"
+        )
+    
+    # 1. Update Password
+    is_valid, error_msg = PasswordManager.validate_password_strength(setup_data.new_password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+    
+    current_user.hashed_password = PasswordManager.hash_password(setup_data.new_password)
+    
+    # 2. Update PIN
+    current_user.teller_pin = PasswordManager.hash_password(setup_data.new_pin)
+    
+    # 3. Mark onboarding complete
+    current_user.is_first_login = False
+    
+    db.commit()
+    
+    # Log event
+    audit = AuditLogger(db, current_user, request)
+    audit.log("ONBOARDING_COMPLETE", "User", str(current_user.id), description="User completed first-time setup (Password & PIN)")
+    
+    return {"message": "Setup complete. You can now access the dashboard."}
+
+@router.post("/update-pin")
+async def update_pin(
+    request: Request,
+    update_data: schemas.PINUpdateRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Self-service PIN update. Requires current password verification.
+    """
+    # Verify password
+    if not PasswordManager.verify_password(update_data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect password")
+    
+    # Update PIN
+    current_user.teller_pin = PasswordManager.hash_password(update_data.new_pin)
+    db.commit()
+    
+    audit = AuditLogger(db, current_user, request)
+    audit.log("PIN_UPDATED", "User", str(current_user.id), description="User updated their transaction PIN self-service")
+    
+    return {"message": "PIN updated successfully"}
+
+@router.post("/users/{user_id}/trigger-pin-reset")
+async def trigger_pin_reset(
+    request: Request,
+    user_id: int,
+    current_user: models.User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Admin-triggered PIN reset. Generates a token and simulated email.
+    """
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Generate token
+    token = secrets.token_urlsafe(32)
+    user.pin_reset_token = token
+    user.pin_reset_token_expiry = datetime.utcnow() + timedelta(hours=2)
+    db.commit()
+    
+    # Log
+    audit = AuditLogger(db, current_user, request)
+    audit.log("PIN_RESET_TRIGGERED", "User", str(user_id), description=f"Admin {current_user.username} triggered PIN reset for {user.username}")
+    
+    # In a real system, send email here.
+    return {
+        "message": f"PIN reset token generated for {user.username}.",
+        "reset_token": token, # Returned for testing/UI purposes in this demo
+        "expires_at": user.pin_reset_token_expiry
+    }
+
+@router.post("/reset-pin-confirm")
+async def reset_pin_confirm(
+    request: Request,
+    confirm_data: schemas.PINResetConfirmRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Confirm PIN reset using the token provided in the email.
+    """
+    user = db.query(models.User).filter(
+        models.User.pin_reset_token == confirm_data.token,
+        models.User.pin_reset_token_expiry > datetime.utcnow()
+    ).first()
+    
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    
+    # Set new PIN
+    user.teller_pin = PasswordManager.hash_password(confirm_data.new_pin)
+    user.pin_reset_token = None
+    user.pin_reset_token_expiry = None
+    db.commit()
+    
+    audit = AuditLogger(db, user, request)
+    audit.log("PIN_RESET_COMPLETE", "User", str(user.id), description="User completed PIN reset via token")
+    
+    return {"message": "Your new PIN has been set successfully. Use it for your next transaction."}
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -427,4 +547,3 @@ async def verify_two_factor(
     )
 
 
-from datetime import datetime

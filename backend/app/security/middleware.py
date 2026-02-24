@@ -24,13 +24,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Content Security Policy (CSP)
         # Prevents XSS attacks by controlling resource loading
+        csp_connect_src = "'self'"
+        if settings.DEBUG:
+            # Allow local development connections (Vite, Backend, etc.)
+            csp_connect_src += " http://localhost:* ws://localhost:* http://127.0.0.1:* ws://127.0.0.1:*"
+            
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data: https:; "
-            "connect-src 'self'; "
+            f"connect-src {csp_connect_src}; "
             "frame-ancestors 'none'; "
             "base-uri 'self'; "
             "form-action 'self';"

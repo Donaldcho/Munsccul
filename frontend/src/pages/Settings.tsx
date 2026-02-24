@@ -8,10 +8,40 @@ import {
 import { useAuthStore } from '../stores/authStore'
 import Users from './Users'
 import Branches from './Branches'
+import { authApi } from '../services/api'
+import toast from 'react-hot-toast'
 
 export default function Settings() {
   const { user } = useAuthStore()
   const [activeTab, setActiveTab] = useState<'general' | 'security' | 'users' | 'branches'>('general')
+  const [pinData, setPinData] = useState({ currentPassword: '', newPin: '', confirmPin: '' })
+  const [isUpdatingPin, setIsUpdatingPin] = useState(false)
+
+  const handleUpdatePin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (pinData.newPin !== pinData.confirmPin) {
+      toast.error('New PIN matches do not match')
+      return
+    }
+    if (pinData.newPin.length !== 4) {
+      toast.error('PIN must be exactly 4 digits')
+      return
+    }
+
+    setIsUpdatingPin(true)
+    try {
+      await authApi.updatePin({
+        current_password: pinData.currentPassword,
+        new_pin: pinData.newPin
+      })
+      toast.success('Transaction PIN updated successfully')
+      setPinData({ currentPassword: '', newPin: '', confirmPin: '' })
+    } catch (error: any) {
+      toast.error(error.response?.data?.detail || 'Failed to update PIN')
+    } finally {
+      setIsUpdatingPin(false)
+    }
+  }
 
   return (
     <div>
@@ -124,10 +154,69 @@ export default function Settings() {
             </div>
           )}
 
-          {activeTab === 'security' && (
+          <div className="space-y-6">
             <div className="card">
               <div className="card-header border-b dark:border-slate-700">
-                <h3 className="text-lg font-medium text-gray-900 dark:text-white">Security Settings</h3>
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">Personal Security</h3>
+                <p className="text-sm text-gray-500">Manage your private transaction credentials</p>
+              </div>
+              <div className="card-body">
+                <form onSubmit={handleUpdatePin} className="space-y-4 max-w-md">
+                  <div>
+                    <label className="label">Current Password</label>
+                    <input
+                      type="password"
+                      required
+                      className="input"
+                      value={pinData.currentPassword}
+                      onChange={e => setPinData({ ...pinData, currentPassword: e.target.value })}
+                      placeholder="Verify your identity"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">New 4-Digit PIN</label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        required
+                        maxLength={4}
+                        className="input text-center text-xl tracking-widest"
+                        value={pinData.newPin}
+                        onChange={e => setPinData({ ...pinData, newPin: e.target.value.replace(/\D/g, '') })}
+                        placeholder="****"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Confirm New PIN</label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        required
+                        maxLength={4}
+                        className="input text-center text-xl tracking-widest"
+                        value={pinData.confirmPin}
+                        onChange={e => setPinData({ ...pinData, confirmPin: e.target.value.replace(/\D/g, '') })}
+                        placeholder="****"
+                      />
+                    </div>
+                  </div>
+                  <div className="pt-2">
+                    <button
+                      type="submit"
+                      disabled={isUpdatingPin}
+                      className="btn btn-primary w-full"
+                    >
+                      {isUpdatingPin ? 'Updating...' : 'Update Transaction PIN'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="card-header border-b dark:border-slate-700">
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">System Security Policy</h3>
               </div>
               <div className="card-body space-y-6">
                 <div className="flex items-center justify-between">
@@ -168,7 +257,7 @@ export default function Settings() {
                 </div>
               </div>
             </div>
-          )}
+          </div>
 
           {activeTab === 'users' && (user?.role === 'SYSTEM_ADMIN' || user?.role === 'OPS_MANAGER') && (
             <Users />

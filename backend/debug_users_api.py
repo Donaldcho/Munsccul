@@ -11,7 +11,7 @@ async def test_users_endpoint():
         try:
             resp = await client.post(f"{BASE_URL}/auth/login", json={
                 "username": "admin",
-                "password": "admin123"
+                "password": "digital2026"
             })
             if resp.status_code != 200:
                 print(f"Login failed: {resp.status_code} {resp.text}")

@@ -15,7 +15,8 @@ import {
   ArrowRightOnRectangleIcon,
   UserCircleIcon,
   SunIcon,
-  MoonIcon
+  MoonIcon,
+  SparklesIcon
 } from '@heroicons/react/24/outline'
 import { useAuthStore } from '../stores/authStore'
 
@@ -25,13 +26,13 @@ const navigation = [
     name: 'Members',
     href: '/members',
     icon: UsersIcon,
-    roles: ['TELLER', 'OPS_MANAGER', 'BRANCH_MANAGER', 'CREDIT_OFFICER', 'AUDITOR', 'BOARD_MEMBER']
+    roles: ['TELLER', 'OPS_MANAGER', 'OPS_DIRECTOR', 'BRANCH_MANAGER', 'CREDIT_OFFICER', 'AUDITOR', 'BOARD_MEMBER']
   },
   {
     name: 'Accounts',
     href: '/accounts',
     icon: CreditCardIcon,
-    roles: ['TELLER', 'OPS_MANAGER', 'BRANCH_MANAGER', 'AUDITOR']
+    roles: ['TELLER', 'OPS_MANAGER', 'OPS_DIRECTOR', 'BRANCH_MANAGER', 'AUDITOR']
   },
   {
     name: 'Transactions',
@@ -43,31 +44,37 @@ const navigation = [
     name: 'Loans',
     href: '/loans',
     icon: DocumentTextIcon,
-    roles: ['CREDIT_OFFICER', 'OPS_MANAGER', 'BRANCH_MANAGER']
+    roles: ['CREDIT_OFFICER', 'OPS_MANAGER', 'OPS_DIRECTOR', 'BRANCH_MANAGER', 'BOARD_MEMBER']
   },
   {
     name: 'Reports',
     href: '/reports',
     icon: ClipboardDocumentListIcon,
-    roles: ['OPS_MANAGER', 'BRANCH_MANAGER', 'AUDITOR', 'BOARD_MEMBER', 'CREDIT_OFFICER']
+    roles: ['OPS_MANAGER', 'OPS_DIRECTOR', 'BRANCH_MANAGER', 'AUDITOR', 'BOARD_MEMBER', 'CREDIT_OFFICER']
   },
   {
     name: 'EOD Operations',
     href: '/eod',
     icon: LockClosedIcon,
-    roles: ['OPS_MANAGER', 'BRANCH_MANAGER']
+    roles: ['OPS_MANAGER', 'OPS_DIRECTOR']
   },
   {
     name: 'Audit Logs',
     href: '/audit-logs',
     icon: ShieldCheckIcon,
-    roles: ['AUDITOR', 'SYSTEM_ADMIN']
+    roles: ['AUDITOR', 'SYSTEM_ADMIN', 'OPS_DIRECTOR', 'BOARD_MEMBER']
+  },
+  {
+    name: 'Smart Njangi',
+    href: '/njangi',
+    icon: SparklesIcon,
+    roles: ['TELLER', 'OPS_MANAGER', 'OPS_DIRECTOR', 'BRANCH_MANAGER', 'CREDIT_OFFICER']
   },
   {
     name: 'Settings',
     href: '/settings',
     icon: CogIcon,
-    roles: ['SYSTEM_ADMIN', 'OPS_MANAGER']
+    roles: ['SYSTEM_ADMIN', 'OPS_MANAGER', 'OPS_DIRECTOR']
   },
 ]
 

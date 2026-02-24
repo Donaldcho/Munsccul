@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import {
     PlusIcon,
-    MagnifyingGlassIcon
+    MagnifyingGlassIcon,
+    KeyIcon
 } from '@heroicons/react/24/outline'
 import { usersApi, branchesApi } from '../services/api'
 import toast from 'react-hot-toast'
@@ -137,6 +138,16 @@ export default function Users() {
                 message = detail.map((err: any) => err.msg).join(', ')
             }
             toast.error(message)
+        }
+    }
+
+    const handleTriggerPinReset = async (userId: number, username: string) => {
+        if (!confirm(`Are you sure you want to trigger a PIN reset for ${username}? They will receive a link to set a new PIN.`)) return
+        try {
+            await usersApi.triggerPinReset(userId)
+            toast.success(`PIN reset triggered for ${username}`)
+        } catch (error: any) {
+            toast.error('Failed to trigger PIN reset')
         }
     }
 
@@ -308,6 +319,16 @@ export default function Users() {
                                                         Suspend
                                                     </button>
                                                 )}
+                                                {user.is_active && (useAuthStore.getState().user?.role === 'SYSTEM_ADMIN') && (
+                                                    <button
+                                                        onClick={() => handleTriggerPinReset(user.id, user.username)}
+                                                        className="text-primary-600 hover:text-primary-900 flex items-center gap-1 text-xs bg-primary-50 px-2 py-1 rounded border border-primary-200"
+                                                        title="Trigger Secure PIN Reset"
+                                                    >
+                                                        <KeyIcon className="h-3 w-3" />
+                                                        Reset PIN
+                                                    </button>
+                                                )}
                                             </div>
                                         )}
                                         {user.approval_status === 'REJECTED' && (
@@ -384,6 +405,9 @@ export default function Users() {
                                                     <option value="TELLER">Teller</option>
                                                     <option value="BRANCH_MANAGER">Branch Manager</option>
                                                     <option value="CREDIT_OFFICER">Credit Officer</option>
+                                                    <option value="OPS_MANAGER">Operations Manager</option>
+                                                    <option value="OPS_DIRECTOR">Operations Director</option>
+                                                    <option value="BOARD_MEMBER">Board Member</option>
                                                     <option value="SYSTEM_ADMIN">System Admin</option>
                                                     <option value="AUDITOR">Auditor</option>
                                                 </select>
@@ -404,6 +428,9 @@ export default function Users() {
                                                     ))}
                                                 </select>
                                             </div>
+                                        </div>
+                                        <div className="bg-blue-50 p-3 rounded border border-blue-100 italic text-[10px] text-blue-800">
+                                            Note: Security PINs are self-service. The user will be prompted to set their private PIN during their first login.
                                         </div>
                                     </div>
                                 </div>

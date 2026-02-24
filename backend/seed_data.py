@@ -41,32 +41,44 @@ def seed_data():
             {
                 "username": "admin",
                 "full_name": "System Administrator",
-                "password": "admin123",
+                "password": "digital2026",
                 "role": UserRole.SYSTEM_ADMIN
             },
             {
                 "username": "manager",
                 "full_name": "Branch Manager",
-                "password": "manager123",
+                "password": "digital2026",
                 "role": UserRole.BRANCH_MANAGER
             },
             {
                 "username": "teller",
                 "full_name": "Teller 1",
-                "password": "teller123",
+                "password": "digital2026",
                 "role": UserRole.TELLER
             },
             {
                 "username": "credit",
                 "full_name": "Credit Officer",
-                "password": "credit123",
+                "password": "digital2026",
                 "role": UserRole.CREDIT_OFFICER
             },
             {
                 "username": "ops",
                 "full_name": "Operations Manager",
-                "password": "ops123",
+                "password": "digital2026",
                 "role": UserRole.OPS_MANAGER
+            },
+            {
+                "username": "board1",
+                "full_name": "Board Director 1",
+                "password": "digital2026",
+                "role": UserRole.BOARD_MEMBER
+            },
+            {
+                "username": "dir1",
+                "full_name": "Operations Director",
+                "password": "digital2026",
+                "role": UserRole.OPS_DIRECTOR
             }
         ]
         

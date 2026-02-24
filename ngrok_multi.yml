@@ -1,0 +1,12 @@
+version: "2"
+authtoken: 3316PxgoJMDJbMgWLbdRpueKRvT_kE6xqK3J514tu5hQD6Vm
+tunnels:
+  api:
+    proto: http
+    addr: 127.0.0.1:8000
+  web:
+    proto: http
+    addr: 127.0.0.1:3002
+  mobile:
+    proto: http
+    addr: 127.0.0.1:8082

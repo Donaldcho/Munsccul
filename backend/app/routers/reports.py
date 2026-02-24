@@ -47,8 +47,8 @@ async def get_dashboard(
     )
 
     dashboard_data = {
-        "accounts": {"total": accounts_total, "total_deposits": total_deposits},
-        "loans": {"total_outstanding": loans_outstanding, "disbursed_today": disbursed_today, "collections_today": collections_today},
+        "accounts": {"total": accounts_total, "total_deposits": float(total_deposits)},
+        "loans": {"total_outstanding": float(loans_outstanding), "disbursed_today": float(disbursed_today), "collections_today": float(collections_today)},
         "pending_approvals": pending_approvals
     }
     
@@ -95,6 +95,18 @@ def handle_export(format_type: str, report_name: str, title: str, data: any):
                  export_data = data["assets"]["items"] + [{"account_code": "", "account_name": "---", "balance": ""}] + \
                                data["liabilities"]["items"] + [{"account_code": "", "account_name": "---", "balance": ""}] + \
                                data["equity"]["items"]
+            elif "sections" in data:
+                 # Flatten Daily Cash Flow segments for simple PDF table
+                 # Ensure all rows have all keys for the simple PDF table generator
+                 keys = ["description", "corp_banks", "mf_balico", "mf_a", "mf_glovic", "cash", "mobile_om", "mobile_mtn", "total", "refs", "comments"]
+                 export_data = [data["brought_forward"]]
+                 for section_name, rows in data["sections"].items():
+                     if rows:
+                         # Header row with all keys empty except description
+                         header_row = {k: "" for k in keys}
+                         header_row["description"] = f"--- {section_name} ---"
+                         export_data.append(header_row)
+                         export_data.extend(rows)
             elif "buckets" in data:
                  export_data = [
                       {"category": "Current", "count": data["buckets"]["current"]["count"], "amount": data["buckets"]["current"]["principal_outstanding"]},
@@ -192,3 +204,35 @@ async def get_daily_cash_flow(
     
     data = ReportingService.generate_daily_cash_flow(db, target_date)
     return handle_export(format, "daily_cash_flow", f"Daily Cash Flow Statement for {target_date}", data)
+
+@router.get("/cobac/liquidity")
+async def get_cobac_liquidity(
+    report_period: str = Query("daily"),
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get COBAC Liquidity Ratio for dashboards"""
+    return ReportingService.generate_cobac_liquidity(db, report_period)
+
+@router.get("/board/metrics")
+async def get_board_metrics(
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Aggregated metrics for the Board Executive Dashboard"""
+    if current_user.role not in [models.UserRole.BOARD_MEMBER, models.UserRole.SYSTEM_ADMIN, models.UserRole.AUDITOR, models.UserRole.OPS_DIRECTOR]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return ReportingService.get_board_metrics(db)
+
+@router.get("/summary-pack")
+async def get_summary_pack(
+    as_of_date: date = Query(default_factory=date.today),
+    current_user: models.User = Depends(require_global_reporting_access),
+    db: Session = Depends(get_db)
+):
+    """Consolidated Board Summary Pack"""
+    return {
+        "title": f"Board Summary Pack - {as_of_date}",
+        "generated_at": date.today().isoformat(),
+        "status": "CONSOLIDATED"
+    }

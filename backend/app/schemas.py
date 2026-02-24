@@ -49,6 +49,8 @@ class TransactionType(str, Enum):
     LOAN_REPAYMENT = "LOAN_REPAYMENT"
     FEE = "FEE"
     INTEREST = "INTEREST"
+    NJANGI_CONTRIBUTION = "NJANGI_CONTRIBUTION"
+    NJANGI_PAYOUT = "NJANGI_PAYOUT"
 
 
 class PaymentChannel(str, Enum):
@@ -73,6 +75,56 @@ class LoanStatus(str, Enum):
     DEFAULTED = "DEFAULTED"
 
 
+class BranchStatus(str, Enum):
+    OPEN = "OPEN"
+    EOD_IN_PROGRESS = "EOD_IN_PROGRESS"
+    CLOSED = "CLOSED"
+
+
+class OverrideStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class CycleInterval(str, Enum):
+    WEEKLY = "WEEKLY"
+    BI_WEEKLY = "BI_WEEKLY"
+    MONTHLY = "MONTHLY"
+
+
+class NjangiGroupStatus(str, Enum):
+    DRAFT = "DRAFT"
+    PENDING_KYC = "PENDING_KYC"
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+    DISSOLVED = "DISSOLVED"
+
+
+class CycleStatus(str, Enum):
+    COLLECTING = "COLLECTING"
+    READY_FOR_PAYOUT = "READY_FOR_PAYOUT"
+    COMPLETED = "COMPLETED"
+
+
+class ContributionStatus(str, Enum):
+    PAID_ON_TIME = "PAID_ON_TIME"
+    PAID_LATE = "PAID_LATE"
+    MISSED = "MISSED"
+
+
+class PayoutStatus(str, Enum):
+    PENDING = "PENDING"
+    DISBURSED = "DISBURSED"
+    FAILED = "FAILED"
+
+
+class InsightType(str, Enum):
+    DEFAULT_WARNING = "DEFAULT_WARNING"
+    STREAK_ACHIEVEMENT = "STREAK_ACHIEVEMENT"
+    LIQUIDITY_RISK = "LIQUIDITY_RISK"
+
+
 # ============== USER SCHEMAS ==============
 class UserApprovalStatus(str, Enum):
     PENDING = "PENDING"
@@ -89,6 +141,7 @@ class UserBase(BaseModel):
     is_active: bool = True
     approval_status: Optional[UserApprovalStatus] = UserApprovalStatus.PENDING
     transaction_limit: Optional[Decimal] = Decimal("0.00")
+    counter_number: Optional[str] = None
 
     @validator('email', pre=True, always=True)
     def empty_string_to_none(cls, v):
@@ -124,6 +177,7 @@ class UserResponse(UserBase):
     created_by: Optional[int] = None
     approved_by: Optional[int] = None
     transaction_limit: Decimal
+    is_first_login: bool
     
     class Config:
         from_attributes = True
@@ -145,6 +199,18 @@ class Token(BaseModel):
     expires_in: int
     user: UserResponse
 
+class OnboardingSetupRequest(BaseModel):
+    new_password: str = Field(..., min_length=8)
+    new_pin: str = Field(..., min_length=4, max_length=4, pattern=r'^\d{4}$')
+
+class PINUpdateRequest(BaseModel):
+    current_password: str
+    new_pin: str = Field(..., min_length=4, max_length=4, pattern=r'^\d{4}$')
+
+class PINResetConfirmRequest(BaseModel):
+    token: str
+    new_pin: str = Field(..., min_length=4, max_length=4, pattern=r'^\d{4}$')
+
 
 # ============== BRANCH SCHEMAS ==============
 class BranchBase(BaseModel):
@@ -157,6 +223,10 @@ class BranchBase(BaseModel):
     email: Optional[str] = None
 
 
+class BranchStatusUpdate(BaseModel):
+    status: BranchStatus
+
+
 class BranchCreate(BranchBase):
     pass
 
@@ -167,6 +237,10 @@ class BranchResponse(BranchBase):
     created_at: datetime
     server_api_key: Optional[str] = None
     gl_vault_code: Optional[str] = None
+    status: BranchStatus
+    vault_cash_limit: Decimal
+    mtn_float: Decimal
+    orange_float: Decimal
     
     class Config:
         from_attributes = True
@@ -220,6 +294,12 @@ class MemberResponse(MemberBase):
     member_id: str
     branch_id: int
     is_active: bool
+    
+    # Njangi metadata
+    trust_score: Decimal
+    on_time_streak: int
+    ai_default_risk_flag: bool
+    
     created_at: datetime
     updated_at: datetime
     
@@ -345,6 +425,36 @@ class TransactionListResponse(BaseModel):
     page_size: int
 
 
+class TransactionOverrideCreate(BaseModel):
+    amount: Decimal
+    transaction_type: str
+    member_id: Optional[int] = None
+    description: Optional[str] = None
+
+
+class TransactionOverrideResponse(BaseModel):
+    id: int
+    teller_id: int
+    manager_id: Optional[int] = None
+    branch_id: int
+    amount: Decimal
+    transaction_type: str
+    member_id: Optional[int] = None
+    status: OverrideStatus
+    requested_at: datetime
+    responded_at: Optional[datetime] = None
+    manager_comments: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DirectOverrideApproveRequest(BaseModel):
+    override_id: int
+    manager_pin: str
+    comments: Optional[str] = None
+
+
 # ============== LOAN PRODUCT SCHEMAS ==============
 class LoanProductBase(BaseModel):
     name: str
@@ -404,6 +514,7 @@ class LoanApplicationRequest(BaseModel):
 class LoanResponse(BaseModel):
     id: int
     loan_number: str
+    purpose: Optional[str] = None
     member_id: int
     product_id: int
     principal_amount: Decimal
@@ -601,3 +712,128 @@ class QueueStats(BaseModel):
 
 # Forward references
 MemberDetailResponse.model_rebuild()
+
+class VaultDropByManagerRequest(BaseModel):
+    teller_id: int
+    amount: Decimal = Field(..., gt=0)
+    manager_pin: str
+
+
+# ============== NJANGI SCHEMAS ==============
+class NjangiGroupBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    contribution_amount: Decimal
+    cycle_frequency: CycleInterval = CycleInterval.MONTHLY
+    escrow_gl_account_id: Optional[int] = None
+    president_id: int
+    bylaws_url: Optional[str] = None
+    meeting_minutes_url: Optional[str] = None
+    executive_signatories: Optional[str] = None
+
+class NjangiGroupCreate(NjangiGroupBase):
+    pass
+
+class NjangiGroupKYCUpload(BaseModel):
+    bylaws_url: str
+    meeting_minutes_url: str
+
+class NjangiGroupKYCApprove(BaseModel):
+    escrow_gl_account_id: int
+
+class NjangiGroupResponse(NjangiGroupBase):
+    id: int
+    status: NjangiGroupStatus
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class NjangiMembershipBase(BaseModel):
+    group_id: int
+    member_id: int
+    payout_order: Optional[int] = None
+
+class NjangiMembershipResponse(NjangiMembershipBase):
+    id: int
+    on_time_streak: int
+    trust_score: Decimal
+    ai_default_risk_flag: bool
+    joined_at: datetime
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+class NjangiMembershipWithGroupResponse(NjangiMembershipResponse):
+    group: NjangiGroupResponse
+
+    class Config:
+        from_attributes = True
+
+class MemberNjangiStatusResponse(BaseModel):
+    memberships: List[NjangiMembershipWithGroupResponse]
+    aggregate_trust_score: float
+
+class NjangiCycleBase(BaseModel):
+    group_id: int
+    cycle_number: int
+    recipient_member_id: int
+    start_date: datetime
+    due_date: datetime
+    pot_target_amount: Decimal
+
+class NjangiCycleResponse(NjangiCycleBase):
+    id: int
+    current_pot_amount: Decimal
+    status: CycleStatus
+
+    class Config:
+        from_attributes = True
+
+class NjangiContributionBase(BaseModel):
+    cycle_id: int
+    member_id: int
+    amount_paid: Decimal
+    payment_channel: PaymentChannel = PaymentChannel.CASH
+
+class NjangiContributionResponse(NjangiContributionBase):
+    id: int
+    status: ContributionStatus
+    transaction_id: Optional[int]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class NjangiPayoutResponse(BaseModel):
+    id: int
+    cycle_id: int
+    recipient_member_id: int
+    amount_disbursed: Decimal
+    destination_account_id: int
+    status: PayoutStatus
+    transaction_id: Optional[int]
+    disbursed_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class NjangiAIInsightResponse(BaseModel):
+    id: int
+    group_id: int
+    member_id: Optional[int]
+    insight_type: InsightType
+    message: str
+    is_acknowledged: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class NjangiReadinessResponse(BaseModel):
+    member_id: int
+    readiness_score: float
+    status: str
+    avg_trust_score: float
+    total_on_time_streak: int

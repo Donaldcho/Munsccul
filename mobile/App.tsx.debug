@@ -1,0 +1,16 @@
+import React from 'react'
+import { View, Text } from 'react-native'
+import { StatusBar } from 'expo-status-bar'
+import { SafeAreaProvider } from 'react-native-safe-area-context'
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <View style={{ flex: 1, alignItems: 'center', justify-content: 'center', backgroundColor: '#fff' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold' }}>Smart Njangi Mobile</Text>
+        <Text style={{ marginTop: 10 }}>If you see this, basic rendering is working.</Text>
+      </View>
+      <StatusBar style="auto" />
+    </SafeAreaProvider>
+  )
+}

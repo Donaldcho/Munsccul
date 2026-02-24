@@ -9,12 +9,14 @@ import {
     ExclamationTriangleIcon
 } from '@heroicons/react/24/outline'
 import { usersApi, loansApi, transactionsApi, reportsApi } from '../../services/api'
+import { useAuthStore } from '../../stores/authStore'
 import { formatCurrency } from '../../utils/formatters'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import LoanProductsConfig from './LoanProductsConfig'
 
 export default function DirectorDashboard() {
+    const { user } = useAuthStore()
     const [activeTab, setActiveTab] = useState<'users' | 'loans' | 'transactions' | 'config'>('users')
     const [pendingUsers, setPendingUsers] = useState<any[]>([])
     const [loanApplications, setLoanApplications] = useState<any[]>([])
@@ -36,7 +38,7 @@ export default function DirectorDashboard() {
             const [usersRes, loansRes, txnsRes, liquidityRes] = await Promise.all([
                 usersApi.getAll(),
                 loansApi.getAll({ status: 'PENDING_REVIEW' }),
-                transactionsApi.getAll({ status: 'pending_approval' }),
+                transactionsApi.getAll({ pending_only: true }),
                 reportsApi.getCobacLiquidity(format(new Date(), 'yyyy-MM'))
             ])
 
@@ -129,7 +131,7 @@ export default function DirectorDashboard() {
     const handleApproveTxn = async (txn: any) => {
         if (!confirm(`Approve transaction of ${formatCurrency(txn.amount)}?`)) return
         try {
-            await transactionsApi.approve({ transaction_ref: txn.transaction_ref, approved: true })
+            await transactionsApi.approve({ transaction_id: txn.id, approved: true })
             toast.success('Transaction Approved')
             fetchAllData()
         } catch (error: any) {
@@ -183,13 +185,15 @@ export default function DirectorDashboard() {
                                     >
                                         Txns ({pendingTransactions.length})
                                     </button>
-                                    <button
-                                        onClick={() => setActiveTab('config')}
-                                        className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${activeTab === 'config' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300' : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'
-                                            }`}
-                                    >
-                                        Configuration
-                                    </button>
+                                    {['OPS_DIRECTOR', 'SYSTEM_ADMIN'].includes(user?.role || '') && (
+                                        <button
+                                            onClick={() => setActiveTab('config')}
+                                            className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${activeTab === 'config' ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300' : 'text-gray-500 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'
+                                                }`}
+                                        >
+                                            Configuration
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -290,51 +294,53 @@ export default function DirectorDashboard() {
                     </div>
 
                     {/* 3. Kill Switch */}
-                    <div className="card">
-                        <div className="card-header border-b border-gray-200 dark:border-slate-700 bg-red-50 dark:bg-red-900/20">
-                            <div className="flex items-center text-red-700 dark:text-red-400">
-                                <ExclamationTriangleIcon className="h-5 w-5 mr-2" />
-                                <h3 className="text-lg font-bold">Kill Switch</h3>
+                    {['OPS_DIRECTOR', 'SYSTEM_ADMIN'].includes(user?.role || '') && (
+                        <div className="card">
+                            <div className="card-header border-b border-gray-200 dark:border-slate-700 bg-red-50 dark:bg-red-900/20">
+                                <div className="flex items-center text-red-700 dark:text-red-400">
+                                    <ExclamationTriangleIcon className="h-5 w-5 mr-2" />
+                                    <h3 className="text-lg font-bold">Kill Switch</h3>
+                                </div>
+                            </div>
+                            <div className="card-body">
+                                <p className="text-xs text-gray-500 dark:text-slate-400 mb-4">Manage access for approved users.</p>
+                                <div className="max-h-64 overflow-y-auto">
+                                    <ul className="divide-y divide-gray-200 dark:divide-slate-700">
+                                        {managedUsers.map((user: any) => (
+                                            <li key={user.id} className={`py-3 flex justify-between items-center transition-colors ${!user.is_active ? 'opacity-75 bg-gray-50 dark:bg-slate-800/40' : 'hover:bg-gray-50/50 dark:hover:bg-slate-800/30'}`}>
+                                                <div>
+                                                    <p className="text-sm font-medium text-gray-900 dark:text-slate-200">
+                                                        {user.username}
+                                                        {!user.is_active && (
+                                                            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300">
+                                                                Suspended
+                                                            </span>
+                                                        )}
+                                                    </p>
+                                                    <p className="text-xs text-gray-500 dark:text-slate-400">{user.role}</p>
+                                                </div>
+                                                {user.is_active ? (
+                                                    <button
+                                                        onClick={() => handleSuspendUser(user)}
+                                                        className="px-2 py-1 text-xs font-bold text-white bg-red-600 rounded hover:bg-red-700 transition-colors"
+                                                    >
+                                                        SUSPEND
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => handleRestoreUser(user)}
+                                                        className="px-2 py-1 text-xs font-bold text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
+                                                    >
+                                                        RESTORE
+                                                    </button>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
                             </div>
                         </div>
-                        <div className="card-body">
-                            <p className="text-xs text-gray-500 dark:text-slate-400 mb-4">Manage access for approved users.</p>
-                            <div className="max-h-64 overflow-y-auto">
-                                <ul className="divide-y divide-gray-200 dark:divide-slate-700">
-                                    {managedUsers.map((user: any) => (
-                                        <li key={user.id} className={`py-3 flex justify-between items-center transition-colors ${!user.is_active ? 'opacity-75 bg-gray-50 dark:bg-slate-800/40' : 'hover:bg-gray-50/50 dark:hover:bg-slate-800/30'}`}>
-                                            <div>
-                                                <p className="text-sm font-medium text-gray-900 dark:text-slate-200">
-                                                    {user.username}
-                                                    {!user.is_active && (
-                                                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300">
-                                                            Suspended
-                                                        </span>
-                                                    )}
-                                                </p>
-                                                <p className="text-xs text-gray-500 dark:text-slate-400">{user.role}</p>
-                                            </div>
-                                            {user.is_active ? (
-                                                <button
-                                                    onClick={() => handleSuspendUser(user)}
-                                                    className="px-2 py-1 text-xs font-bold text-white bg-red-600 rounded hover:bg-red-700 transition-colors"
-                                                >
-                                                    SUSPEND
-                                                </button>
-                                            ) : (
-                                                <button
-                                                    onClick={() => handleRestoreUser(user)}
-                                                    className="px-2 py-1 text-xs font-bold text-white bg-green-600 rounded hover:bg-green-700 transition-colors"
-                                                >
-                                                    RESTORE
-                                                </button>
-                                            )}
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
+                    )}
                 </div>
             </div>
 

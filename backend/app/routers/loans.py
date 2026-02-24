@@ -1229,3 +1229,14 @@ async def get_loan_portfolio_stats(
         "disbursed_today": float(disbursed_today),
         "par_rate": float(delinquent_amount / total_outstanding * 100) if total_outstanding > 0 else 0
     }
+
+@router.get("/applications/{loan_id}/dossier")
+async def get_loan_dossier(
+    loan_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Detailed dossier for Credit Committee review"""
+    if current_user.role not in [models.UserRole.BOARD_MEMBER, models.UserRole.SYSTEM_ADMIN, models.UserRole.OPS_DIRECTOR]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return ReportingService.get_loan_dossier(db, loan_id)

@@ -3,6 +3,7 @@ Core Transactions Router - The "Offline-First" Engine
 Handles deposits, withdrawals, transfers with double-entry bookkeeping
 """
 from typing import Optional, List
+import asyncio
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from sqlalchemy.orm import Session
@@ -20,6 +21,7 @@ from app.auth import (
 from app.audit import AuditLogger
 from app import models, schemas
 from app.services.accounting import AccountingService
+from app.websocket_manager import ws_manager
 
 router = APIRouter(prefix="/transactions", tags=["Core Transactions"])
 
@@ -199,15 +201,22 @@ async def deposit(
         comments=deposit_data.comments
     )
     
-    # Check if approval required (Four-Eyes Principle)
-    requires_approval = check_four_eyes_principle(
-        db, float(deposit_data.amount), current_user.id
-    )
-    
     if requires_approval:
         transaction.sync_status = models.SyncStatus.PENDING
+        
+        # Create persistent override request for the Ops Manager "Inbox"
+        override = models.TransactionOverride(
+            teller_id=current_user.id,
+            branch_id=current_user.branch_id,
+            amount=deposit_data.amount,
+            transaction_type="DEPOSIT",
+            member_id=account.member_id,
+            status=models.OverrideStatus.PENDING
+        )
+        db.add(override)
         db.commit()
         db.refresh(transaction)
+        db.refresh(override)
         
         # Log pending transaction
         audit = AuditLogger(db, current_user, request)
@@ -218,9 +227,23 @@ async def deposit(
             description=f"Deposit of {deposit_data.amount} FCFA pending approval"
         )
         
+        # Broadcast to branch managers via WebSocket
+        # This will trigger the "RED Critical Alert" on the Ops Manager dashboard
+        import asyncio
+        asyncio.create_task(ws_manager.broadcast_to_branch(current_user.branch_id, {
+            "type": "OVERRIDE_REQUESTED",
+            "priority": "CRITICAL",
+            "override_id": override.id,
+            "teller_name": current_user.full_name,
+            "amount": float(deposit_data.amount),
+            "member_id": account.member.member_id,
+            "transaction_type": "Deposit",
+            "timestamp": datetime.utcnow().isoformat()
+        }))
+        
         raise HTTPException(
             status_code=status.HTTP_202_ACCEPTED,
-            detail="Transaction requires manager approval"
+            detail="Transaction requires manager approval. Override request sent."
         )
     
     # Update last_member_activity for dormancy tracking (C10)
@@ -375,8 +398,20 @@ async def withdrawal(
     
     if requires_approval:
         transaction.sync_status = models.SyncStatus.PENDING
+        
+        # Create persistent override request for the Ops Manager "Inbox"
+        override = models.TransactionOverride(
+            teller_id=current_user.id,
+            branch_id=current_user.branch_id,
+            amount=withdrawal_data.amount,
+            transaction_type="WITHDRAWAL",
+            member_id=account.member_id,
+            status=models.OverrideStatus.PENDING
+        )
+        db.add(override)
         db.commit()
         db.refresh(transaction)
+        db.refresh(override)
         
         # Log pending transaction
         audit = AuditLogger(db, current_user, request)
@@ -387,9 +422,21 @@ async def withdrawal(
             description=f"Withdrawal of {withdrawal_data.amount} FCFA pending approval"
         )
         
+        # Broadcast to branch managers via WebSocket
+        asyncio.create_task(ws_manager.broadcast_to_branch(current_user.branch_id, {
+            "type": "OVERRIDE_REQUESTED",
+            "priority": "CRITICAL",
+            "override_id": override.id,
+            "teller_name": current_user.full_name,
+            "amount": float(withdrawal_data.amount),
+            "member_id": account.member.member_id,
+            "transaction_type": "Withdrawal",
+            "timestamp": datetime.utcnow().isoformat()
+        }))
+        
         raise HTTPException(
             status_code=status.HTTP_202_ACCEPTED,
-            detail="Transaction requires manager approval"
+            detail="Transaction requires manager approval. Override request sent."
         )
     
     # Update last_member_activity for dormancy tracking (C10)
@@ -467,12 +514,45 @@ async def transfer(
     
     if requires_approval:
         transaction.sync_status = models.SyncStatus.PENDING
+        
+        # Create persistent override request for the Ops Manager "Inbox"
+        override = models.TransactionOverride(
+            teller_id=current_user.id,
+            branch_id=current_user.branch_id,
+            amount=transfer_data.amount,
+            transaction_type="TRANSFER",
+            member_id=from_account.member_id,
+            status=models.OverrideStatus.PENDING
+        )
+        db.add(override)
         db.commit()
         db.refresh(transaction)
+        db.refresh(override)
+        
+        # Log pending transaction
+        audit = AuditLogger(db, current_user, request)
+        audit.log(
+            action="TRANSACTION_PENDING_APPROVAL",
+            entity_type="Transaction",
+            entity_id=transaction.transaction_ref,
+            description=f"Transfer of {transfer_data.amount} FCFA pending approval"
+        )
+        
+        # Broadcast to branch managers via WebSocket
+        asyncio.create_task(ws_manager.broadcast_to_branch(current_user.branch_id, {
+            "type": "OVERRIDE_REQUESTED",
+            "priority": "CRITICAL",
+            "override_id": override.id,
+            "teller_name": current_user.full_name,
+            "amount": float(transfer_data.amount),
+            "member_id": from_account.member.member_id,
+            "transaction_type": "Transfer",
+            "timestamp": datetime.utcnow().isoformat()
+        }))
         
         raise HTTPException(
             status_code=status.HTTP_202_ACCEPTED,
-            detail="Transaction requires manager approval"
+            detail="Transaction requires manager approval. Override request sent."
         )
     
     db.commit()
@@ -507,10 +587,10 @@ async def approve_transaction(
     from app.auth import require_manager
     
     # Verify manager role
-    if current_user.role.value not in ["BRANCH_MANAGER", "SYSTEM_ADMIN"]:
+    if current_user.role.value not in ["BRANCH_MANAGER", "SYSTEM_ADMIN", "OPS_MANAGER", "OPS_DIRECTOR", "BOARD_MEMBER"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only managers can approve transactions"
+            detail="You do not have permission to approve transactions"
         )
     
     # Get transaction
@@ -544,6 +624,29 @@ async def approve_transaction(
         transaction.approved_by = current_user.id
         transaction.approved_at = datetime.utcnow()
         
+        # Resolve any associated override requests for this transaction
+        # In this implementation, we look for PENDING overrides for this teller/amount/member
+        pending_override = db.query(models.TransactionOverride).filter(
+            models.TransactionOverride.teller_id == transaction.created_by,
+            models.TransactionOverride.amount == transaction.amount,
+            models.TransactionOverride.status == models.OverrideStatus.PENDING
+        ).first()
+        
+        if pending_override:
+            pending_override.status = models.OverrideStatus.APPROVED
+            pending_override.manager_id = current_user.id
+            pending_override.responded_at = datetime.utcnow()
+            pending_override.manager_comments = approval_data.reason
+            
+            # Notify the teller via WebSocket that they are "unblocked"
+            asyncio.create_task(ws_manager.broadcast_to_branch(current_user.branch_id, {
+                "type": "OVERRIDE_RESOLVED",
+                "status": "APPROVED",
+                "override_id": pending_override.id,
+                "transaction_ref": transaction.transaction_ref,
+                "manager_name": current_user.full_name
+            }))
+
         db.commit()
         db.refresh(transaction)
         
@@ -587,6 +690,172 @@ async def approve_transaction(
         )
     
     return schemas.TransactionResponse.model_validate(transaction)
+
+
+@router.get("/overrides/pending", response_model=List[schemas.TransactionOverrideResponse])
+async def list_pending_overrides(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all pending transaction overrides for the manager's branch"""
+    if current_user.role not in [models.UserRole.BRANCH_MANAGER, models.UserRole.OPS_MANAGER, models.UserRole.OPS_DIRECTOR]:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+        
+    return db.query(models.TransactionOverride).filter(
+        models.TransactionOverride.branch_id == current_user.branch_id,
+        models.TransactionOverride.status == models.OverrideStatus.PENDING
+    ).all()
+
+
+@router.post("/overrides/{override_id}/approve", response_model=schemas.TransactionResponse)
+async def approve_remote_override(
+    request: Request,
+    override_id: int,
+    approve_data: schemas.DirectOverrideApproveRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Directly approve an override from the Ops Manager dashboard.
+    Uses manager's PIN for remote verification.
+    """
+    from app.auth import verify_password
+    
+    # 1. Verify manager role
+    if current_user.role not in [models.UserRole.BRANCH_MANAGER, models.UserRole.OPS_MANAGER, models.UserRole.OPS_DIRECTOR]:
+        raise HTTPException(status_code=403, detail="Unauthorized: Manager role required")
+        
+    # 2. Verify Manager PIN
+    if not current_user.teller_pin or not verify_password(approve_data.manager_pin, current_user.teller_pin):
+        raise HTTPException(status_code=401, detail="Invalid Manager PIN")
+        
+    # 3. Get Override
+    override = db.query(models.TransactionOverride).filter(models.TransactionOverride.id == override_id).first()
+    if not override:
+        raise HTTPException(status_code=404, detail="Override request not found")
+        
+    if override.status != models.OverrideStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Override is already resolved")
+
+    # 4. Find the associated PENDING transaction
+    transaction = db.query(models.Transaction).filter(
+        models.Transaction.created_by == override.teller_id,
+        models.Transaction.amount == override.amount,
+        models.Transaction.sync_status == models.SyncStatus.PENDING
+    ).order_by(models.Transaction.created_at.desc()).first()
+    
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Associated pending transaction not found")
+
+    # 5. Approve both
+    override.status = models.OverrideStatus.APPROVED
+    override.manager_id = current_user.id
+    override.responded_at = datetime.utcnow()
+    override.manager_comments = approve_data.comments
+    
+    transaction.sync_status = models.SyncStatus.SYNCED
+    transaction.approved_by = current_user.id
+    transaction.approved_at = datetime.utcnow()
+    
+    # Update last_member_activity if it's a member transaction
+    if transaction.account_id:
+        account = db.query(models.Account).filter(models.Account.id == transaction.account_id).first()
+        if account:
+            account.last_member_activity = datetime.utcnow()
+
+    db.commit()
+    db.refresh(transaction)
+    
+    # 6. Notify Teller via WebSocket
+    asyncio.create_task(ws_manager.broadcast_to_branch(current_user.branch_id, {
+        "type": "OVERRIDE_RESOLVED",
+        "status": "APPROVED",
+        "override_id": override.id,
+        "transaction_ref": transaction.transaction_ref,
+        "manager_name": current_user.full_name
+    }))
+    
+    # 7. Audit log
+    audit = AuditLogger(db, current_user, request)
+    audit.log_approval(
+        entity_type="TransactionOverride",
+        entity_id=str(override.id),
+        approved=True,
+        reason=approve_data.comments
+    )
+    
+    return schemas.TransactionResponse.model_validate(transaction)
+
+
+@router.post("/overrides/{override_id}/reject")
+async def reject_remote_override(
+    request: Request,
+    override_id: int,
+    approve_data: schemas.DirectOverrideApproveRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Reject an override request. Reverses the PENDING transaction.
+    """
+    from app.auth import verify_password
+    
+    # 1. Verify manager role
+    if current_user.role not in [models.UserRole.BRANCH_MANAGER, models.UserRole.OPS_MANAGER, models.UserRole.OPS_DIRECTOR]:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+        
+    # 2. Verify Manager PIN
+    if not current_user.teller_pin or not verify_password(approve_data.manager_pin, current_user.teller_pin):
+        raise HTTPException(status_code=401, detail="Invalid Manager PIN")
+        
+    # 3. Get Override
+    override = db.query(models.TransactionOverride).filter(models.TransactionOverride.id == override_id).first()
+    if not override:
+        raise HTTPException(status_code=404, detail="Override not found")
+        
+    # 4. Find the associated PENDING transaction
+    transaction = db.query(models.Transaction).filter(
+        models.Transaction.created_by == override.teller_id,
+        models.Transaction.amount == override.amount,
+        models.Transaction.sync_status == models.SyncStatus.PENDING
+    ).order_by(models.Transaction.created_at.desc()).first()
+    
+    # 5. Update Override
+    override.status = models.OverrideStatus.REJECTED
+    override.manager_id = current_user.id
+    override.responded_at = datetime.utcnow()
+    override.manager_comments = approve_data.comments
+    
+    # 6. Update Transaction if found
+    if transaction:
+        transaction.sync_status = models.SyncStatus.FAILED
+        transaction.approved_by = current_user.id
+        transaction.approved_at = datetime.utcnow()
+        transaction.description = f"{transaction.description} [OVERRIDE REJECTED]"
+        
+        # Reverse balance if it was already applied (usually balance is only applied on SYNCED, but let's check your core logic)
+        # In this system, balance is applied immediately and reversed on reject.
+        account = db.query(models.Account).filter(models.Account.id == transaction.account_id).first()
+        if account:
+            if transaction.transaction_type == models.TransactionType.DEPOSIT:
+                account.balance -= transaction.amount
+                account.available_balance -= transaction.amount
+            elif transaction.transaction_type == models.TransactionType.WITHDRAWAL:
+                account.balance += transaction.amount
+                account.available_balance += transaction.amount
+
+    db.commit()
+    
+    # 7. Notify Teller
+    asyncio.create_task(ws_manager.broadcast_to_branch(current_user.branch_id, {
+        "type": "OVERRIDE_RESOLVED",
+        "status": "REJECTED",
+        "override_id": override.id,
+        "manager_name": current_user.full_name,
+        "reason": approve_data.comments
+    }))
+    
+    return {"status": "rejected", "override_id": override_id}
 
 
 @router.get("", response_model=schemas.TransactionListResponse)

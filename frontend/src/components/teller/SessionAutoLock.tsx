@@ -7,7 +7,7 @@ interface Props {
     idleTimeout?: number; // In milliseconds, default 60s
 }
 
-export const SessionAutoLock: React.FC<Props> = ({ idleTimeout = 60000 }) => {
+export const SessionAutoLock: React.FC<Props> = ({ idleTimeout = 1800000 }) => {
     const [isLocked, setIsLocked] = useState(false);
     const [pin, setPin] = useState('');
     const [isVerifying, setIsVerifying] = useState(false);

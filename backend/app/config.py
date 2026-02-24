@@ -80,8 +80,12 @@ class Settings(BaseSettings):
     # Data Sovereignty - Local Cameroon hosting
     DATA_CENTER_REGION: str = "Camtel-Zamengoue"
     
+    # Infrastructure
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = Settings()

@@ -1,2 +1,2 @@
 from passlib.hash import bcrypt
-print(bcrypt.hash("admin123"))
+print(bcrypt.hash("digital2026"))

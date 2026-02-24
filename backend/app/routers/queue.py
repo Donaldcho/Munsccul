@@ -8,26 +8,11 @@ import json
 from app.database import get_db
 from app.auth import get_current_user, require_role
 from app import models, schemas
+from app.websocket_manager import ws_manager
 
 router = APIRouter(prefix="/queue", tags=["Queue Management"])
 
-# WebSocket Connection Manager for TV Display
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-
-    async def broadcast(self, message: dict):
-        for connection in self.active_connections:
-            await connection.send_json(message)
-
-manager = ConnectionManager()
+# WebSocket manager is now imported from app.websocket_manager
 
 async def broadcast_queue_state(db: Session, branch_id: int):
     """Broadast the current waiting queue for a specific branch"""
@@ -36,7 +21,7 @@ async def broadcast_queue_state(db: Session, branch_id: int):
         models.QueueTicket.status == models.QueueStatus.WAITING
     ).order_by(models.QueueTicket.issued_at).all()
     
-    await manager.broadcast({
+    await ws_manager.broadcast_to_branch(branch_id, {
         "type": "QUEUE_UPDATE",
         "branch_id": branch_id,
         "waiting": [{
@@ -128,7 +113,7 @@ async def call_next(
     db.refresh(ticket)
     
     # 3. Broadcast to TV Display
-    await manager.broadcast({
+    await ws_manager.broadcast_to_branch(ticket.branch_id, {
         "type": "TICKET_CALLED",
         "ticket_number": ticket.ticket_number,
         "counter": ticket.counter_number,
@@ -184,7 +169,7 @@ async def recall_ticket(
     ticket = db.query(models.QueueTicket).filter(models.QueueTicket.id == ticket_id).first()
     if not ticket: raise HTTPException(status_code=404)
     
-    await manager.broadcast({
+    await ws_manager.broadcast_to_branch(ticket.branch_id, {
         "type": "TICKET_RECALLED",
         "ticket_number": ticket.ticket_number,
         "counter": ticket.counter_number

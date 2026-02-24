@@ -3,7 +3,7 @@ import { reportsApi } from '../services/api';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../stores/authStore';
 
-type ReportType = 'trial-balance' | 'balance-sheet' | 'income-statement' | 'par';
+type ReportType = 'trial-balance' | 'balance-sheet' | 'income-statement' | 'par' | 'daily-cash-flow';
 type ExportFormat = 'json' | 'excel' | 'pdf';
 
 const ReportsDashboard: React.FC = () => {
@@ -18,7 +18,7 @@ const ReportsDashboard: React.FC = () => {
   const fetchReport = async (format: ExportFormat) => {
     try {
       setLoading(true);
-      const params = { as_of_date: targetDate, end_date: targetDate, start_date: '2020-01-01', format }; // Simple start date for income statement config
+      const params = { as_of_date: targetDate, end_date: targetDate, start_date: '2020-01-01', target_date: targetDate, format };
 
       let response;
       switch (reportType) {
@@ -33,6 +33,9 @@ const ReportsDashboard: React.FC = () => {
           break;
         case 'par':
           response = await reportsApi.getParReport(params);
+          break;
+        case 'daily-cash-flow':
+          response = await reportsApi.getDailyCashFlow(params);
           break;
       }
 
@@ -86,6 +89,7 @@ const ReportsDashboard: React.FC = () => {
                   <option value="trial-balance">Trial Balance (Balance Générale)</option>
                   <option value="balance-sheet">Balance Sheet (Bilan)</option>
                   <option value="income-statement">Income Statement (Compte de Résultat)</option>
+                  <option value="daily-cash-flow">Daily Cash Flow Statement</option>
                 </>
               )}
               <option value="par">Portfolio At Risk (PAR Analysis)</option>

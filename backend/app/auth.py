@@ -218,14 +218,23 @@ def check_four_eyes_principle(
     creator_id: int
 ) -> bool:
     """
-    Check if transaction requires approval based on Four-Eyes Principle
+    Check if transaction requires approval based on Four-Eyes Principle or user's specific limit
     Returns True if approval is required
     """
+    creator = db.query(models.User).filter(models.User.id == creator_id).first()
+    if not creator:
+        return True
+
+    # 1. User-specific transaction limit (if set by Ops Manager)
+    user_limit = float(creator.transaction_limit or 0)
+    if user_limit > 0 and transaction_amount > user_limit:
+        return True
+
+    # 2. Global system threshold check for non-management roles
     if transaction_amount >= settings.FOUR_EYES_THRESHOLD:
-        # Check if creator is not a manager
-        creator = db.query(models.User).filter(models.User.id == creator_id).first()
-        if creator and creator.role.value not in ["BRANCH_MANAGER", "SYSTEM_ADMIN"]:
+        if creator.role not in [models.UserRole.BRANCH_MANAGER, models.UserRole.SYSTEM_ADMIN, models.UserRole.OPS_MANAGER]:
             return True
+            
     return False
 
 

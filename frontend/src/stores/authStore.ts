@@ -10,6 +10,7 @@ export interface User {
   role: 'TELLER' | 'BRANCH_MANAGER' | 'CREDIT_OFFICER' | 'SYSTEM_ADMIN' | 'AUDITOR' | 'OPS_MANAGER' | 'OPS_DIRECTOR' | 'BOARD_MEMBER'
   branch_id: number | null
   is_active: boolean
+  is_first_login: boolean
   teller_cash_limit?: number
   teller_gl_account_id?: number
 }

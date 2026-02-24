@@ -156,6 +156,28 @@ ROLE_PERMISSIONS = {
         # Reports
         Permission.REPORT_READ,
     ],
+    "OPS_DIRECTOR": [
+        Permission.USER_READ,
+        Permission.MEMBER_ALL,
+        Permission.ACCOUNT_ALL,
+        Permission.TRANSACTION_ALL,
+        Permission.LOAN_ALL,
+        Permission.REPORT_ALL,
+        Permission.AUDIT_READ,
+         Permission.SYSTEM_CONFIGURE,
+    ],
+    "BOARD_MEMBER": [
+        Permission.USER_READ,
+        Permission.MEMBER_READ,
+        Permission.MEMBER_READ_SENSITIVE,
+        Permission.ACCOUNT_READ,
+        Permission.TRANSACTION_READ,
+        Permission.LOAN_READ,
+        Permission.LOAN_PRODUCT_CREATE,
+        Permission.REPORT_ALL,
+        Permission.AUDIT_ALL,
+        Permission.SYSTEM_CONFIGURE,
+    ],
     "AUDITOR": [
         # Read-only access to everything
         Permission.USER_READ,

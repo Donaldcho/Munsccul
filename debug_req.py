@@ -1,16 +1,32 @@
 import requests
+import json
 
-url = "http://localhost:8000/api/v1"
+base_url = "http://localhost:8000/api/v1"
 
-# Login as admin
-login_response = requests.post(f"{url}/auth/login", json={"username": "ops", "password": "ops123"})
-if login_response.status_code != 200:
-    print(f"Login Failed: {login_response.text}")
-    exit(1)
-token = login_response.json().get("access_token")
+def debug():
+    # 1. Login
+    print("Logging in...")
+    login_resp = requests.post(f"{base_url}/auth/login", data={
+        "username": "manager",
+        "password": "manager123"
+    })
+    
+    if login_resp.status_code != 200:
+        print(f"Login failed: {login_resp.status_code}")
+        print(login_resp.text)
+        return
+        
+    token = login_resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # 2. Fetch Liquidity Stats
+    print("Fetching liquidity stats...")
+    resp = requests.get(f"{base_url}/branches/1/stats/liquidity", headers=headers)
+    print(f"Status: {resp.status_code}")
+    try:
+        print(json.dumps(resp.json(), indent=2))
+    except:
+        print(resp.text)
 
-# Get Members
-headers = {"Authorization": f"Bearer {token}"}
-response = requests.get(f"{url}/members", headers=headers)
-print(f"Members endpoint - Status Code: {response.status_code}")
-print(f"Response snippet: {response.text[:200]}")
+if __name__ == "__main__":
+    debug()
