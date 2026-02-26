@@ -97,6 +97,32 @@ class QueueServiceType(str, enum.Enum):
     LOAN = "LOAN"
 
 
+class VaultTransferType(str, enum.Enum):
+    """Types of vault/cash movements"""
+    VAULT_TO_TELLER = "VAULT_TO_TELLER"
+    TELLER_TO_VAULT = "TELLER_TO_VAULT"
+    BANK_TO_VAULT = "BANK_TO_VAULT"
+    VAULT_ADJUSTMENT = "VAULT_ADJUSTMENT"
+    VAULT_TO_EXTERNAL = "VAULT_TO_EXTERNAL"
+    EXTERNAL_TO_DIGITAL = "EXTERNAL_TO_DIGITAL"
+    DIGITAL_TO_EXTERNAL = "DIGITAL_TO_EXTERNAL"
+
+
+class TreasuryAccountType(str, enum.Enum):
+    """Types of treasury liquidity pools"""
+    VAULT = "VAULT"
+    BANK = "BANK"
+    CREDIT_UNION = "CREDIT_UNION"
+    MOBILE_MONEY = "MOBILE_MONEY"
+
+
+class VaultTransferStatus(str, enum.Enum):
+    """Status of manual cash transfers"""
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
 class QueueStatus(str, enum.Enum):
     """QMS Ticket Status"""
     WAITING = "WAITING"
@@ -160,6 +186,14 @@ class InsightType(str, enum.Enum):
     LIQUIDITY_RISK = "LIQUIDITY_RISK"
 
 
+class IntercomEntityType(str, enum.Enum):
+    """Entity types that can be attached to an intercom message"""
+    TRANSACTION = "TRANSACTION"
+    MEMBER_PROFILE = "MEMBER_PROFILE"
+    LOAN_APP = "LOAN_APP"
+    NJANGI_GROUP = "NJANGI_GROUP"
+
+
 class User(Base):
     """System users (Tellers, Managers, etc.)"""
     __tablename__ = "users"
@@ -187,7 +221,7 @@ class User(Base):
     
     # Teller Operations
     teller_cash_limit = Column(Numeric(15, 2), default=1000000.00)
-    teller_gl_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
+    teller_gl_account_id = Column(Integer, ForeignKey("gl_accounts.id"), nullable=True)
     teller_pin = Column(String(255), nullable=True)
     counter_number = Column(String(20), nullable=True)  # Counter or terminal assignment
     
@@ -234,6 +268,29 @@ class Branch(Base):
     # Relationships
     users = relationship("User", back_populates="branch")
     members = relationship("Member", back_populates="branch")
+
+
+class TreasuryAccount(Base):
+    """Institution liquidity accounts (Vault, Partner Banks, MoMo)"""
+    __tablename__ = "treasury_accounts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    account_type = Column(Enum(TreasuryAccountType), nullable=False)
+    account_number = Column(String(50), nullable=True) # e.g. Phone number for MoMo, Account number for Bank
+    
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False)
+    gl_account_code = Column(String(20), ForeignKey("gl_accounts.account_code"), nullable=False)
+    
+    max_limit = Column(Numeric(15, 2), nullable=True) # Threshold for alerts (e.g., 5,000,000 for MoMo)
+    is_active = Column(Boolean, default=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    branch = relationship("Branch")
+    gl_account = relationship("GLAccount", foreign_keys=[gl_account_code])
 
 
 class Member(Base):
@@ -451,6 +508,39 @@ class TransactionOverride(Base):
     manager = relationship("User", foreign_keys=[manager_id])
     branch = relationship("Branch")
     member = relationship("Member")
+
+
+class VaultTransfer(Base):
+    """Tracks stateful cash movements between vault, tellers, and external banks.
+    Implements the Maker-Checker principle for treasury management.
+    """
+    __tablename__ = "vault_transfers"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    transfer_ref = Column(String(50), unique=True, nullable=False, index=True)
+    transfer_type = Column(Enum(VaultTransferType), nullable=False)
+    
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False)
+    teller_id = Column(Integer, ForeignKey("users.id"), nullable=True) # None for BANK_TO_VAULT/ADJUSTMENT
+    source_treasury_id = Column(Integer, ForeignKey("treasury_accounts.id"), nullable=True)
+    destination_treasury_id = Column(Integer, ForeignKey("treasury_accounts.id"), nullable=True)
+    
+    amount = Column(Numeric(15, 2), nullable=False)
+    status = Column(Enum(VaultTransferStatus), default=VaultTransferStatus.PENDING)
+    
+    description = Column(Text, nullable=True)
+    
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    approved_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    branch = relationship("Branch")
+    teller = relationship("User", foreign_keys=[teller_id])
+    creator = relationship("User", foreign_keys=[created_by])
+    approver = relationship("User", foreign_keys=[approved_by])
 
 
 class LoanProduct(Base):
@@ -790,6 +880,33 @@ class PasswordHistory(Base):
     
     __table_args__ = (
         Index('idx_password_history_user', 'user_id', 'changed_at'),
+    )
+
+
+class IntercomMessage(Base):
+    """Secure Internal Intercom Chat (WORM storage)"""
+    __tablename__ = "intercom_messages"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # receiver_id is NULL for Broadcast messages
+    receiver_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    
+    content = Column(Text, nullable=False)
+    
+    # Context Attachment (Optional)
+    attached_entity_type = Column(Enum(IntercomEntityType), nullable=True)
+    attached_entity_id = Column(String(50), nullable=True)
+    
+    timestamp = Column(DateTime, server_default=func.now(), index=True)
+    read_status = Column(Boolean, default=False)
+    
+    # Relationships
+    sender = relationship("User", foreign_keys=[sender_id])
+    receiver = relationship("User", foreign_keys=[receiver_id])
+    
+    __table_args__ = (
+        Index('idx_intercom_sender_receiver', 'sender_id', 'receiver_id', 'timestamp'),
     )
 
 
@@ -1526,10 +1643,20 @@ class TellerReconciliation(Base):
     teller_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False)
     
-    # Financial fields
+    # Financial fields - CASH
     declared_amount = Column(Numeric(15, 2), nullable=False)
     system_expected_amount = Column(Numeric(15, 2), nullable=False)
     variance_amount = Column(Numeric(15, 2), nullable=False)
+    
+    # Financial fields - DIGITAL FLOAT (MTN MoMo)
+    declared_momo_balance = Column(Numeric(15, 2), nullable=False, default=0.00)
+    system_expected_momo_balance = Column(Numeric(15, 2), nullable=False, default=0.00)
+    momo_variance = Column(Numeric(15, 2), nullable=False, default=0.00)
+    
+    # Financial fields - DIGITAL FLOAT (ORANGE MONEY)
+    declared_om_balance = Column(Numeric(15, 2), nullable=False, default=0.00)
+    system_expected_om_balance = Column(Numeric(15, 2), nullable=False, default=0.00)
+    om_variance = Column(Numeric(15, 2), nullable=False, default=0.00)
     
     # Denominations (JSON formatting for counts)
     denominations = Column(Text, nullable=True)

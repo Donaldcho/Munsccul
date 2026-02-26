@@ -141,6 +141,36 @@ export default function Users() {
         }
     }
 
+    const handleRestoreUser = async (userId: number) => {
+        if (!confirm('Are you sure you want to restore this user? They will regain access.')) return
+        try {
+            await usersApi.update(userId, { is_active: true })
+            toast.success('User restored successfully')
+            fetchData()
+        } catch (error: any) {
+            const detail = error.response?.data?.detail
+            let message = 'Failed to restore user'
+            if (typeof detail === 'string') {
+                message = detail
+            } else if (Array.isArray(detail)) {
+                message = detail.map((err: any) => err.msg).join(', ')
+            }
+            toast.error(message)
+        }
+    }
+
+    const handleRevokeAccess = async (userId: number, fullName: string) => {
+        if (!confirm(`Are you sure you want to revoke access for ${fullName}? They will be locked out immediately. This should be used when a staff member leaves the institution.`)) return
+        try {
+            await usersApi.update(userId, { is_active: false })
+            toast.success(`Access revoked for ${fullName}`)
+            fetchData()
+        } catch (error: any) {
+            const detail = error.response?.data?.detail
+            toast.error(typeof detail === 'string' ? detail : 'Failed to revoke access')
+        }
+    }
+
     const handleTriggerPinReset = async (userId: number, username: string) => {
         if (!confirm(`Are you sure you want to trigger a PIN reset for ${username}? They will receive a link to set a new PIN.`)) return
         try {
@@ -280,59 +310,91 @@ export default function Users() {
                                         {user.last_login ? new Date(user.last_login).toLocaleDateString() : 'Never'}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        {/* PENDING: OPS_MANAGER approves/rejects; Admin sees status */}
                                         {user.approval_status === 'PENDING' && (
-                                            <div className="flex space-x-2">
-                                                {/* Only OPS_MANAGER can approve/reject */}
-                                                {(useAuthStore.getState().user?.role === 'OPS_MANAGER') && (
+                                            <div className="flex space-x-2 items-center">
+                                                {(useAuthStore.getState().user?.role === 'OPS_MANAGER' || useAuthStore.getState().user?.role === 'OPS_DIRECTOR') && (
                                                     <>
                                                         <button
                                                             onClick={() => {
                                                                 setSelectedUser(user)
                                                                 setShowApprovalModal(true)
                                                             }}
-                                                            className="text-green-600 hover:text-green-900"
+                                                            className="text-green-600 hover:text-green-900 text-xs bg-green-50 px-2 py-1 rounded border border-green-200"
                                                         >
                                                             Approve
                                                         </button>
                                                         <button
                                                             onClick={() => handleApproveUser(user.id, false)}
-                                                            className="text-red-600 hover:text-red-900"
+                                                            className="text-red-600 hover:text-red-900 text-xs bg-red-50 px-2 py-1 rounded border border-red-200"
                                                         >
                                                             Reject
                                                         </button>
                                                     </>
                                                 )}
-                                                {/* SYSTEM_ADMIN sees status only */}
-                                                {(useAuthStore.getState().user?.role === 'SYSTEM_ADMIN') && (
-                                                    <span className="text-yellow-600 italic">Needs Manager Approval</span>
+                                                {useAuthStore.getState().user?.role === 'SYSTEM_ADMIN' && (
+                                                    <span className="text-yellow-600 text-xs italic flex items-center gap-1">
+                                                        ⏳ Awaiting Ops Manager Approval
+                                                    </span>
                                                 )}
                                             </div>
                                         )}
+
+                                        {/* APPROVED: OPS_MANAGER suspends/restores; Admin can revoke if staff leaves */}
                                         {user.approval_status === 'APPROVED' && (
-                                            <div className="flex items-center space-x-3">
-                                                <span className="text-green-600">Approved</span>
-                                                {user.is_active && (useAuthStore.getState().user?.role === 'OPS_MANAGER') && (
+                                            <div className="flex items-center space-x-2 flex-wrap gap-1">
+                                                {/* Status badge */}
+                                                {user.is_active
+                                                    ? <span className="text-green-700 text-xs font-medium">✓ Active</span>
+                                                    : <span className="text-gray-500 text-xs font-medium">Suspended</span>
+                                                }
+
+                                                {/* OPS_MANAGER controls */}
+                                                {user.is_active && (useAuthStore.getState().user?.role === 'OPS_MANAGER' || useAuthStore.getState().user?.role === 'OPS_DIRECTOR') && (
                                                     <button
                                                         onClick={() => handleSuspendUser(user.id)}
-                                                        className="text-red-600 hover:text-red-900 text-xs bg-red-50 px-2 py-1 rounded border border-red-200"
+                                                        className="text-orange-600 hover:text-orange-900 text-xs bg-orange-50 px-2 py-1 rounded border border-orange-200"
                                                     >
                                                         Suspend
                                                     </button>
                                                 )}
-                                                {user.is_active && (useAuthStore.getState().user?.role === 'SYSTEM_ADMIN') && (
+                                                {!user.is_active && (useAuthStore.getState().user?.role === 'OPS_MANAGER' || useAuthStore.getState().user?.role === 'OPS_DIRECTOR') && (
                                                     <button
-                                                        onClick={() => handleTriggerPinReset(user.id, user.username)}
-                                                        className="text-primary-600 hover:text-primary-900 flex items-center gap-1 text-xs bg-primary-50 px-2 py-1 rounded border border-primary-200"
-                                                        title="Trigger Secure PIN Reset"
+                                                        onClick={() => handleRestoreUser(user.id)}
+                                                        className="text-green-600 hover:text-green-900 text-xs bg-green-50 px-2 py-1 rounded border border-green-200"
                                                     >
-                                                        <KeyIcon className="h-3 w-3" />
-                                                        Reset PIN
+                                                        Restore
                                                     </button>
+                                                )}
+
+                                                {/* SYSTEM_ADMIN: Revoke Access (for staff who've left) + PIN Reset */}
+                                                {useAuthStore.getState().user?.role === 'SYSTEM_ADMIN' && user.is_active && (
+                                                    <>
+                                                        <button
+                                                            onClick={() => handleTriggerPinReset(user.id, user.username)}
+                                                            className="text-primary-600 hover:text-primary-900 flex items-center gap-1 text-xs bg-primary-50 px-2 py-1 rounded border border-primary-200"
+                                                            title="Trigger Secure PIN Reset"
+                                                        >
+                                                            <KeyIcon className="h-3 w-3" />
+                                                            Reset PIN
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleRevokeAccess(user.id, user.full_name)}
+                                                            className="text-red-600 hover:text-red-900 text-xs bg-red-50 px-2 py-1 rounded border border-red-200"
+                                                            title="Revoke access — use when staff leaves the institution"
+                                                        >
+                                                            Revoke Access
+                                                        </button>
+                                                    </>
+                                                )}
+                                                {useAuthStore.getState().user?.role === 'SYSTEM_ADMIN' && !user.is_active && (
+                                                    <span className="text-gray-400 text-xs italic">Access revoked</span>
                                                 )}
                                             </div>
                                         )}
+
                                         {user.approval_status === 'REJECTED' && (
-                                            <span className="text-red-600">Rejected</span>
+                                            <span className="text-red-600 text-xs">Rejected</span>
                                         )}
                                     </td>
                                 </tr>

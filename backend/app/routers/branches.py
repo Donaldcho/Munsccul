@@ -5,14 +5,18 @@ Handles branch operations and administration
 from typing import Optional, List
 import secrets
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, WebSocket
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
+import logging
 
 from app.database import get_db
 from app.auth import get_current_user, require_admin
 from app.audit import AuditLogger
 from app import models, schemas
+from app.websocket_manager import ws_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/branches", tags=["Branch Management"])
 
@@ -208,7 +212,7 @@ async def update_branch_status(
     return branch
 
 
-@router.get("/{branch_id}/stats/liquidity")
+@router.get("/{branch_id}/stats/liquidity", response_model=schemas.LiquidityMatrixResponse)
 async def get_liquidity_stats(
     branch_id: int,
     current_user: models.User = Depends(get_current_user),
@@ -216,30 +220,46 @@ async def get_liquidity_stats(
 ):
     """
     Get detailed liquidity matrix for the branch.
-    Includes Main Vault balance and each active teller's drawer balance.
+    Includes Internal Cash, External Placements, and Digital Wallets.
     """
     try:
         branch = db.query(models.Branch).filter(models.Branch.id == branch_id).first()
         if not branch:
             raise HTTPException(status_code=404, detail="Branch not found")
 
-        # 1. Get Vault Balance (from GL)
-        vault_gl = branch.gl_vault_code or "1010"
-        
-        raw_vault = db.query(
-            func.sum(
-                case(
-                    (models.GLJournalEntry.entry_type == 'DEBIT', models.GLJournalEntry.amount),
-                    else_=-models.GLJournalEntry.amount
+        # Helper to get GL Balance
+        def get_gl_balance(gl_code: str) -> float:
+            raw = db.query(
+                func.sum(
+                    case(
+                        (models.GLJournalEntry.entry_type == 'DEBIT', models.GLJournalEntry.amount),
+                        else_=-models.GLJournalEntry.amount
+                    )
                 )
-            )
-        ).select_from(models.GLJournalEntry).join(
-            models.GLAccount, models.GLJournalEntry.gl_account_id == models.GLAccount.id
-        ).filter(models.GLAccount.account_code == vault_gl).scalar()
-        
-        vault_balance = float(raw_vault) if raw_vault is not None else 0.0
+            ).select_from(models.GLJournalEntry).join(
+                models.GLAccount, models.GLJournalEntry.gl_account_id == models.GLAccount.id
+            ).filter(models.GLAccount.account_code == gl_code).scalar()
+            return float(raw) if raw is not None else 0.0
 
-        # 2. Get Teller Drawer Balances
+        categories = []
+        total_liquidity = 0.0
+
+        # === 1. INTERNAL CASH ===
+        internal_items = []
+        internal_balance = 0.0
+        
+        # Vault
+        vault_gl = branch.gl_vault_code or "1010"
+        vault_bal = get_gl_balance(vault_gl)
+        internal_items.append({
+            "name": "Main Vault",
+            "balance": str(vault_bal),
+            "limit": str(branch.vault_cash_limit) if branch.vault_cash_limit else None,
+            "account_number": None
+        })
+        internal_balance += vault_bal
+
+        # Tellers
         tellers = db.query(models.User).filter(
             models.User.branch_id == branch_id,
             models.User.role == models.UserRole.TELLER,
@@ -247,44 +267,96 @@ async def get_liquidity_stats(
             models.User.teller_gl_account_id != None
         ).all()
         
-        teller_drawers = []
         for teller in tellers:
-            # Get GL account code for this teller
             gl_acc = db.query(models.GLAccount).filter(models.GLAccount.id == teller.teller_gl_account_id).first()
             if not gl_acc: continue
             
-            raw_balance = db.query(
-                func.sum(
-                    case(
-                        (models.GLJournalEntry.entry_type == 'DEBIT', models.GLJournalEntry.amount),
-                        else_=-models.GLJournalEntry.amount
-                    )
-                )
-            ).filter(
-                models.GLJournalEntry.gl_account_id == gl_acc.id
-            ).scalar()
-            
-            balance = float(raw_balance) if raw_balance is not None else 0.0
-            limit = float(teller.teller_cash_limit) if teller.teller_cash_limit is not None else 0.0
-            
-            teller_drawers.append({
-                "teller_id": teller.id,
-                "teller_name": teller.full_name,
-                "counter": teller.counter_number or f"Counter {teller.id}",
-                "balance": balance,
-                "limit": limit,
-                "approaching_limit": balance > (limit * 0.8) if limit > 0 else False
+            t_bal = get_gl_balance(gl_acc.account_code)
+            internal_items.append({
+                "name": teller.full_name,
+                "balance": str(t_bal),
+                "limit": str(teller.teller_cash_limit) if teller.teller_cash_limit else None,
+                "account_number": teller.counter_number or "Counter"
             })
+            internal_balance += t_bal
+            
+        categories.append({
+            "name": "INTERNAL CASH",
+            "category_type": "INTERNAL",
+            "total_balance": str(internal_balance),
+            "items": internal_items
+        })
+        total_liquidity += internal_balance
+
+        # === 2. EXTERNAL PLACEMENTS ===
+        external_items = []
+        external_balance = 0.0
+        seen_external_gls = set()
+        
+        external_accounts = db.query(models.TreasuryAccount).filter(
+            models.TreasuryAccount.branch_id == branch_id,
+            models.TreasuryAccount.account_type.in_([models.TreasuryAccountType.BANK, models.TreasuryAccountType.CREDIT_UNION]),
+            models.TreasuryAccount.is_active == True
+        ).all()
+        
+        for acc in external_accounts:
+            bal = get_gl_balance(acc.gl_account_code)
+            external_items.append({
+                "name": acc.name,
+                "balance": str(bal),
+                "limit": str(acc.max_limit) if acc.max_limit else None,
+                "account_number": acc.account_number
+            })
+            # To avoid double-counting categories if they point to the same GL, 
+            # we should only add to the total if we haven't seen this GL in this category.
+            # However, for external accounts, usually they SHOULD be separate.
+            if acc.gl_account_code not in seen_external_gls:
+                external_balance += bal
+                seen_external_gls.add(acc.gl_account_code)
+            
+        categories.append({
+            "name": "EXTERNAL PLACEMENTS",
+            "category_type": "EXTERNAL",
+            "total_balance": str(external_balance),
+            "items": external_items
+        })
+        total_liquidity += external_balance
+
+        # === 3. DIGITAL WALLETS ===
+        digital_items = []
+        digital_balance = 0.0
+        seen_digital_gls = set()
+        
+        digital_accounts = db.query(models.TreasuryAccount).filter(
+            models.TreasuryAccount.branch_id == branch_id,
+            models.TreasuryAccount.account_type == models.TreasuryAccountType.MOBILE_MONEY,
+            models.TreasuryAccount.is_active == True
+        ).all()
+        
+        for acc in digital_accounts:
+            bal = get_gl_balance(acc.gl_account_code)
+            digital_items.append({
+                "name": acc.name,
+                "balance": str(bal),
+                "limit": str(acc.max_limit) if acc.max_limit else None,
+                "account_number": acc.account_number
+            })
+            if acc.gl_account_code not in seen_digital_gls:
+                digital_balance += bal
+                seen_digital_gls.add(acc.gl_account_code)
+            
+        categories.append({
+            "name": "DIGITAL WALLETS",
+            "category_type": "DIGITAL",
+            "total_balance": str(digital_balance),
+            "items": digital_items
+        })
+        total_liquidity += digital_balance
 
         return {
             "branch_id": branch_id,
-            "main_vault": vault_balance,
-            "teller_drawers": teller_drawers,
-            "momo": {
-                "MTN_MOMO": float(branch.mtn_float) if branch.mtn_float is not None else 0.0,
-                "ORANGE_MONEY": float(branch.orange_float) if branch.orange_float is not None else 0.0
-            },
-            "updated_at": datetime.utcnow().isoformat()
+            "total_liquidity": total_liquidity,
+            "categories": categories
         }
     except Exception as e:
         import traceback
@@ -354,3 +426,19 @@ async def manager_vault_drop(
     audit.log("MANAGER_VAULT_DROP", "User", str(teller.id), description=f"Manager {current_user.username} moved {drop.amount} to vault")
     
     return {"status": "success", "transaction_ref": transaction.transaction_ref}
+
+@router.websocket("/ws/{branch_id}")
+async def branch_websocket(websocket: WebSocket, branch_id: int):
+    """
+    Unified WebSocket endpoint for branch-specific alerts.
+    Path: /api/v1/branches/ws/{branch_id}
+    """
+    logger.info(f"WebSocket handshake received for branch {branch_id}")
+    await ws_manager.connect(websocket, branch_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except Exception as e:
+        logger.error(f"WS Error in branch {branch_id}: {e}")
+    finally:
+        ws_manager.disconnect(websocket, branch_id)

@@ -56,6 +56,8 @@ class EventType(str, Enum):
     CHARGE_APPLIED = "charge.applied"
     CHARGE_PAID = "charge.paid"
     PENALTY_APPLIED = "penalty.applied"
+    # Fraud Events
+    FRAUD_ALERT_TRIGGERED = "fraud.alert.triggered"
     
     # System Events
     USER_LOGIN = "user.login"

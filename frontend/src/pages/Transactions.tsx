@@ -5,7 +5,7 @@ import {
   ArrowsRightLeftIcon,
   CheckCircleIcon
 } from '@heroicons/react/24/outline'
-import { transactionsApi } from '../services/api'
+import { transactionsApi, mobileMoneyApi } from '../services/api'
 import { formatCurrency, formatDateTime, formatTransactionRef } from '../utils/formatters'
 import toast from 'react-hot-toast'
 
@@ -56,16 +56,27 @@ export default function Transactions() {
   const handleDeposit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      await transactionsApi.deposit({
-        account_id: parseInt(formData.account_id),
-        amount: parseFloat(formData.amount),
-        description: formData.description,
-        payment_channel: formData.payment_channel,
-        purpose: formData.purpose,
-        external_reference: formData.external_reference || undefined,
-        comments: formData.comments || undefined
-      })
-      toast.success('Deposit successful')
+      if (formData.payment_channel === 'MTN_MOMO' || formData.payment_channel === 'ORANGE_MONEY') {
+        await mobileMoneyApi.collect({
+          provider: formData.payment_channel,
+          phone_number: formData.external_reference,
+          amount: parseFloat(formData.amount),
+          account_id: parseInt(formData.account_id),
+          description: formData.description || `${formData.payment_channel} Deposit`
+        })
+        toast.success(`${formData.payment_channel} Collection Request Sent! Please ask member to check their phone.`)
+      } else {
+        await transactionsApi.deposit({
+          account_id: parseInt(formData.account_id),
+          amount: parseFloat(formData.amount),
+          description: formData.description,
+          payment_channel: formData.payment_channel,
+          purpose: formData.purpose,
+          external_reference: formData.external_reference || undefined,
+          comments: formData.comments || undefined
+        })
+        toast.success('Deposit successful')
+      }
       setShowDepositModal(false)
       setFormData({
         account_id: '', to_account_id: '', amount: '', description: '',
@@ -80,16 +91,27 @@ export default function Transactions() {
   const handleWithdrawal = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      await transactionsApi.withdraw({
-        account_id: parseInt(formData.account_id),
-        amount: parseFloat(formData.amount),
-        description: formData.description,
-        payment_channel: formData.payment_channel,
-        purpose: formData.purpose,
-        external_reference: formData.external_reference || undefined,
-        comments: formData.comments || undefined
-      })
-      toast.success('Withdrawal successful')
+      if (formData.payment_channel === 'MTN_MOMO' || formData.payment_channel === 'ORANGE_MONEY') {
+        await mobileMoneyApi.disburse({
+          provider: formData.payment_channel,
+          phone_number: formData.external_reference,
+          amount: parseFloat(formData.amount),
+          account_id: parseInt(formData.account_id),
+          description: formData.description || `${formData.payment_channel} Withdrawal`
+        })
+        toast.success(`${formData.payment_channel} Disbursement Request Sent!`)
+      } else {
+        await transactionsApi.withdraw({
+          account_id: parseInt(formData.account_id),
+          amount: parseFloat(formData.amount),
+          description: formData.description,
+          payment_channel: formData.payment_channel,
+          purpose: formData.purpose,
+          external_reference: formData.external_reference || undefined,
+          comments: formData.comments || undefined
+        })
+        toast.success('Withdrawal successful')
+      }
       setShowWithdrawModal(false)
       setFormData({
         account_id: '', to_account_id: '', amount: '', description: '',
@@ -277,13 +299,17 @@ export default function Transactions() {
                   </div>
                   {(formData.payment_channel !== 'CASH') && (
                     <div>
-                      <label className="label">External Ref (Mobile Ref / Check #)</label>
+                      <label className="label">
+                        {formData.payment_channel === 'MTN_MOMO' || formData.payment_channel === 'ORANGE_MONEY'
+                          ? 'Phone Number (e.g. 671234567)'
+                          : 'External Ref (Mobile Ref / Check #)'}
+                      </label>
                       <input
                         type="text"
                         value={formData.external_reference}
                         onChange={(e) => setFormData({ ...formData, external_reference: e.target.value })}
                         className="input"
-                        placeholder="Enter transaction reference"
+                        placeholder={formData.payment_channel === 'MTN_MOMO' ? 'Enter MTN momo phone number' : 'Enter transaction reference'}
                         required={formData.payment_channel === 'MTN_MOMO' || formData.payment_channel === 'ORANGE_MONEY'}
                       />
                     </div>
@@ -392,13 +418,18 @@ export default function Transactions() {
                   </div>
                   {(formData.payment_channel !== 'CASH') && (
                     <div>
-                      <label className="label">External Ref (Check # / Transfer Ref)</label>
+                      <label className="label">
+                        {formData.payment_channel === 'MTN_MOMO' || formData.payment_channel === 'ORANGE_MONEY'
+                          ? 'Phone Number (e.g. 671234567)'
+                          : 'External Ref (Check # / Transfer Ref)'}
+                      </label>
                       <input
                         type="text"
                         value={formData.external_reference}
                         onChange={(e) => setFormData({ ...formData, external_reference: e.target.value })}
                         className="input"
-                        placeholder="Enter reference number"
+                        placeholder={formData.payment_channel === 'MTN_MOMO' ? 'Enter MTN momo phone number' : 'Enter routing reference'}
+                        required={formData.payment_channel === 'MTN_MOMO' || formData.payment_channel === 'ORANGE_MONEY'}
                       />
                     </div>
                   )}

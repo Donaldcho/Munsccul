@@ -9,6 +9,12 @@ from enum import Enum
 
 
 # ============== ENUMS ==============
+class IntercomEntityType(str, Enum):
+    TRANSACTION = "TRANSACTION"
+    MEMBER_PROFILE = "MEMBER_PROFILE"
+    LOAN_APP = "LOAN_APP"
+    NJANGI_GROUP = "NJANGI_GROUP"
+
 class QueueServiceType(str, Enum):
     CASH = "CASH"
     SERVICE = "SERVICE"
@@ -51,6 +57,32 @@ class TransactionType(str, Enum):
     INTEREST = "INTEREST"
     NJANGI_CONTRIBUTION = "NJANGI_CONTRIBUTION"
     NJANGI_PAYOUT = "NJANGI_PAYOUT"
+
+
+class VaultTransferType(str, Enum):
+    """Types of vault/cash movements"""
+    VAULT_TO_TELLER = "VAULT_TO_TELLER"
+    TELLER_TO_VAULT = "TELLER_TO_VAULT"
+    BANK_TO_VAULT = "BANK_TO_VAULT"
+    VAULT_ADJUSTMENT = "VAULT_ADJUSTMENT"
+    VAULT_TO_EXTERNAL = "VAULT_TO_EXTERNAL"
+    EXTERNAL_TO_DIGITAL = "EXTERNAL_TO_DIGITAL"
+    DIGITAL_TO_EXTERNAL = "DIGITAL_TO_EXTERNAL"
+
+
+class TreasuryAccountType(str, Enum):
+    """Types of treasury liquidity pools"""
+    VAULT = "VAULT"
+    BANK = "BANK"
+    CREDIT_UNION = "CREDIT_UNION"
+    MOBILE_MONEY = "MOBILE_MONEY"
+
+
+class VaultTransferStatus(str, Enum):
+    """Status of manual cash transfers"""
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class PaymentChannel(str, Enum):
@@ -192,6 +224,28 @@ class UserApprovalRequest(BaseModel):
     approve: bool
     transaction_limit: Optional[Decimal] = Field(default=Decimal("0.00"), ge=0)
 
+
+# --- Intercom ---
+
+class IntercomMessageBase(BaseModel):
+    content: str
+    attached_entity_type: Optional[IntercomEntityType] = None
+    attached_entity_id: Optional[str] = None
+
+class IntercomMessageCreate(IntercomMessageBase):
+    receiver_id: Optional[int] = None
+
+class IntercomMessageOut(IntercomMessageBase):
+    id: int
+    sender_id: int
+    receiver_id: Optional[int]
+    timestamp: datetime
+    read_status: bool
+    
+    # Ideally we'd include sender details here, but we keep it simple for now
+    
+    class Config:
+        from_attributes = True
 
 class Token(BaseModel):
     access_token: str
@@ -603,6 +657,25 @@ class DailyCashPosition(BaseModel):
     transaction_count: int
 
 
+# ============== LIQUIDITY MATRIX SCHEMAS ==============
+class LiquidityCategoryDetail(BaseModel):
+    name: str
+    balance: Decimal
+    limit: Optional[Decimal] = None
+    account_number: Optional[str] = None
+
+class LiquidityCategory(BaseModel):
+    name: str
+    category_type: str # INTERNAL, EXTERNAL, DIGITAL
+    total_balance: Decimal
+    items: List[LiquidityCategoryDetail]
+
+class LiquidityMatrixResponse(BaseModel):
+    branch_id: int
+    total_liquidity: Decimal
+    categories: List[LiquidityCategory]
+
+
 # ============== DASHBOARD SCHEMAS ==============
 class DashboardStats(BaseModel):
     total_members: int
@@ -654,6 +727,8 @@ class Denominations(BaseModel):
 
 class BlindEODRequest(BaseModel):
     denominations: Denominations
+    momo_balance: Decimal = Field(default=Decimal("0.00"), ge=0)
+    om_balance: Decimal = Field(default=Decimal("0.00"), ge=0)
 
 class VaultDropRequest(BaseModel):
     amount: Decimal = Field(..., gt=0)
@@ -669,6 +744,15 @@ class TellerReconciliationResponse(BaseModel):
     declared_amount: Decimal
     system_expected_amount: Decimal
     variance_amount: Decimal
+    
+    # Digital balances
+    declared_momo_balance: Decimal
+    system_expected_momo_balance: Decimal
+    momo_variance: Decimal
+    declared_om_balance: Decimal
+    system_expected_om_balance: Decimal
+    om_variance: Decimal
+    
     status: str
     created_at: datetime
     
@@ -709,6 +793,66 @@ class QueueStats(BaseModel):
     serving_count: int
     longest_wait_minutes: int
     active_tellers: int
+
+
+# ============== TREASURY SCHEMAS ==============
+class TreasuryAccountBase(BaseModel):
+    name: str
+    account_type: TreasuryAccountType
+    account_number: Optional[str] = None
+    gl_account_code: str
+    max_limit: Optional[Decimal] = None
+    is_active: bool = True
+
+class TreasuryAccountCreate(TreasuryAccountBase):
+    pass
+
+class TreasuryAccountResponse(TreasuryAccountBase):
+    id: int
+    branch_id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class VaultAdjustmentRequest(BaseModel):
+    amount: Decimal = Field(..., gt=0)
+    description: str
+
+
+class VaultTransferRequestData(BaseModel):
+    amount: Decimal = Field(..., gt=0)
+    transfer_type: VaultTransferType
+    description: Optional[str] = None
+    source_treasury_id: Optional[int] = None
+    destination_treasury_id: Optional[int] = None
+
+
+class VaultTransferApprovalReq(BaseModel):
+    approved: bool
+    manager_pin: str
+
+
+class VaultTransferResponse(BaseModel):
+    id: int
+    transfer_ref: str
+    transfer_type: VaultTransferType
+    branch_id: int
+    teller_id: Optional[int] = None
+    source_treasury_id: Optional[int] = None
+    destination_treasury_id: Optional[int] = None
+    amount: Decimal
+    status: VaultTransferStatus
+    description: Optional[str] = None
+    created_by: int
+    approved_by: Optional[int] = None
+    created_at: datetime
+    approved_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
 
 # Forward references
 MemberDetailResponse.model_rebuild()

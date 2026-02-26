@@ -11,10 +11,11 @@ import {
   CheckCircleIcon,
   XCircleIcon,
 } from '@heroicons/react/24/outline'
-import { usersApi, loansApi, transactionsApi, reportsApi, opsApi, eodApi } from '../../services/api'
+import { usersApi, loansApi, transactionsApi, reportsApi, opsApi, eodApi, treasuryApi } from '../../services/api'
 import { njangiApi } from '../../services/njangiApi'
 import { useAuthStore } from '../../stores/authStore'
 import { formatCurrency } from '../../utils/formatters'
+import { getErrorMessage } from '../../utils/errorUtils'
 import toast from 'react-hot-toast'
 
 interface OverrideRequest {
@@ -41,9 +42,16 @@ export default function OpsManagerDashboard() {
   const [amlFlags, setAmlFlags] = useState<any[]>([])
   const [liquidityRatio, setLiquidityRatio] = useState<{ ratio: number; status: string }>({ ratio: 100, status: 'COMPLIANT' })
   const [eodLocked, setEodLocked] = useState(false)
+  const [pendingTransfers, setPendingTransfers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [transferModal, setTransferModal] = useState<any>(null)
+  const [transferPin, setTransferPin] = useState('')
+  const [showAdjustmentModal, setShowAdjustmentModal] = useState(false)
+  const [adjustmentAmount, setAdjustmentAmount] = useState('')
+  const [adjustmentDesc, setAdjustmentDesc] = useState('Opening Vault Balance Adjustment')
 
   const [overrideModal, setOverrideModal] = useState<OverrideRequest | null>(null)
+  const [overrideAction, setOverrideAction] = useState<'APPROVE' | 'REJECT'>('APPROVE')
   const [overridePin, setOverridePin] = useState('')
   const [vaultDropModal, setVaultDropModal] = useState(false)
   const [vaultDropTeller, setVaultDropTeller] = useState<any>(null)
@@ -56,16 +64,18 @@ export default function OpsManagerDashboard() {
 
   const fetchInbox = async () => {
     try {
-      const [overrides, loans, staff, njangiRes] = await Promise.all([
+      const [overrides, loans, staff, njangiRes, transfers] = await Promise.all([
         opsApi.getOverrideRequests({ branch_id: branchId }).then(r => r.data),
         loansApi.getAll({ status: 'PENDING_REVIEW' }).then(r => r.data),
         usersApi.getAll().then(r => r.data.filter((u: any) => u.approval_status === 'PENDING')),
         njangiApi.getGroups().then(r => r.data.filter((g: any) => g.status === 'PENDING_KYC')),
+        treasuryApi.getPendingTransfers().then(r => r.data),
       ])
       setOverrideRequests(overrides)
       setPendingLoans(Array.isArray(loans) ? loans : loans?.applications || [])
       setPendingStaff(staff)
       setPendingNjangi(njangiRes || [])
+      setPendingTransfers(transfers || [])
     } catch (e) {
       console.error('Fetch inbox', e)
     }
@@ -74,7 +84,7 @@ export default function OpsManagerDashboard() {
   const fetchLiquidity = async () => {
     try {
       const [liq, aml, lock, ratio] = await Promise.all([
-        opsApi.getLiquidity({ branch_id: branchId }).then(r => r.data),
+        opsApi.getLiquidity(branchId).then(r => r.data),
         opsApi.getAmlFlags({ branch_id: branchId }).then(r => r.data?.items || []),
         opsApi.getEodLockStatus({ branch_id: branchId }).then(r => r.data),
         reportsApi.getCobacLiquidity('daily').then(r => r.data).catch(() => ({ ratio: 100, status: 'COMPLIANT' })),
@@ -107,8 +117,9 @@ export default function OpsManagerDashboard() {
         if (data.type === 'TELLER_OVERRIDE_REQUEST') {
           fetchInbox()
         }
-        if (data.type === 'TELLER_OVERRIDE_APPROVED' || data.type === 'TELLER_OVERRIDE_REJECTED') {
+        if (data.type === 'TELLER_OVERRIDE_APPROVED' || data.type === 'TELLER_OVERRIDE_REJECTED' || data.type === 'TREASURY_UPDATE') {
           fetchInbox()
+          if (data.type === 'TREASURY_UPDATE') fetchLiquidity()
         }
       } catch (_) { }
     }
@@ -122,29 +133,24 @@ export default function OpsManagerDashboard() {
     }
   }, [branchId])
 
-  const handleApproveOverride = async () => {
+  const handleOverrideSubmit = async () => {
     if (!overrideModal || !overridePin) {
       toast.error('Enter your PIN')
       return
     }
     try {
-      await opsApi.approveOverride(overrideModal.id, { manager_pin: overridePin })
-      toast.success('Override approved. Teller unblocked.')
+      if (overrideAction === 'APPROVE') {
+        await opsApi.approveOverride(overrideModal.id, { manager_pin: overridePin })
+        toast.success('Override approved. Teller unblocked.')
+      } else {
+        await opsApi.rejectOverride(overrideModal.id, { manager_pin: overridePin, comments: 'Rejected by Ops Manager' })
+        toast.success('Override rejected.')
+      }
       setOverrideModal(null)
       setOverridePin('')
       fetchInbox()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Failed to approve')
-    }
-  }
-
-  const handleRejectOverride = async (req: OverrideRequest) => {
-    try {
-      await opsApi.rejectOverride(req.id)
-      toast.success('Override rejected')
-      fetchInbox()
-    } catch (e) {
-      toast.error('Failed to reject')
+      toast.error(getErrorMessage(e, `Failed to ${overrideAction.toLowerCase()}`))
     }
   }
 
@@ -188,7 +194,46 @@ export default function OpsManagerDashboard() {
       setVaultDropPin('')
       fetchLiquidity()
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || 'Vault drop failed')
+      toast.error(getErrorMessage(e, 'Vault drop failed'))
+    }
+  }
+
+  const handleApproveTransfer = async (approved: boolean) => {
+    if (approved && !transferPin) {
+      toast.error('Enter your PIN')
+      return
+    }
+    try {
+      await treasuryApi.approveTransfer(transferModal.id, {
+        approved,
+        manager_pin: transferPin
+      })
+      toast.success(approved ? 'Transfer Approved & Ledger Posted' : 'Transfer Rejected')
+      setTransferModal(null)
+      setTransferPin('')
+      fetchInbox()
+      fetchLiquidity()
+    } catch (e: any) {
+      toast.error(getErrorMessage(e, 'Action failed'))
+    }
+  }
+
+  const handleVaultAdjustment = async () => {
+    if (!adjustmentAmount) {
+      toast.error('Enter amount')
+      return
+    }
+    try {
+      await treasuryApi.vaultAdjustment({
+        amount: parseFloat(adjustmentAmount),
+        description: adjustmentDesc
+      })
+      toast.success('Vault Adjustment Successful')
+      setShowAdjustmentModal(false)
+      setAdjustmentAmount('')
+      fetchLiquidity()
+    } catch (e: any) {
+      toast.error(getErrorMessage(e, 'Adjustment failed'))
     }
   }
 
@@ -210,6 +255,14 @@ export default function OpsManagerDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {user?.role === 'OPS_MANAGER' && (
+            <button
+              onClick={() => setShowAdjustmentModal(true)}
+              className="px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded-lg hover:bg-purple-700 transition shadow-sm flex items-center gap-1"
+            >
+              <ArrowTrendingUpIcon className="h-4 w-4" /> Genesis Injection
+            </button>
+          )}
           {eodLocked && (
             <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 flex items-center">
               <LockClosedIcon className="h-4 w-4 mr-1" /> EOD In Progress
@@ -250,13 +303,13 @@ export default function OpsManagerDashboard() {
                       </div>
                       <div className="flex gap-2">
                         <button
-                          onClick={() => setOverrideModal(req)}
+                          onClick={() => { setOverrideAction('APPROVE'); setOverrideModal(req) }}
                           className="btn-sm bg-green-600 text-white font-bold rounded-lg px-3 py-1.5"
                         >
                           Approve remotely
                         </button>
                         <button
-                          onClick={() => handleRejectOverride(req)}
+                          onClick={() => { setOverrideAction('REJECT'); setOverrideModal(req) }}
                           className="btn-sm border border-red-300 text-red-600 rounded-lg px-3 py-1.5"
                         >
                           Reject
@@ -264,6 +317,43 @@ export default function OpsManagerDashboard() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* Treasury: Pending Cash Transfers */}
+              {pendingTransfers.length > 0 && (
+                <div className="p-4 bg-primary-50/30 dark:bg-primary-900/5">
+                  <h3 className="text-[10px] font-black text-primary-600 dark:text-primary-400 uppercase tracking-widest mb-3 flex items-center">
+                    <BanknotesIcon className="h-4 w-4 mr-1.5" />
+                    Pending Cash Transfers
+                  </h3>
+                  <div className="space-y-3">
+                    {pendingTransfers.map((tx: any) => (
+                      <div key={tx.id} className="flex items-center justify-between p-3 rounded-xl bg-white dark:bg-slate-800 border border-primary-100 dark:border-primary-900/30 shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-lg ${tx.transfer_type === 'TELLER_TO_VAULT' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                            {tx.transfer_type === 'TELLER_TO_VAULT' ? <ArrowTrendingUpIcon className="h-4 w-4" /> : <InboxIcon className="h-4 w-4" />}
+                          </div>
+                          <div>
+                            <p className="text-sm font-bold text-gray-900 dark:text-white">
+                              {tx.transfer_type.replace(/_/g, ' ')}
+                            </p>
+                            <p className="text-[10px] text-gray-500">
+                              {formatCurrency(tx.amount)} • By {tx.creator_name || 'Staff'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setTransferModal(tx)}
+                            className="px-3 py-1.5 bg-primary-600 text-white text-xs font-bold rounded-lg hover:bg-primary-700"
+                          >
+                            Verify & Accept
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               {/* Priority: Pending Loans */}
@@ -318,7 +408,7 @@ export default function OpsManagerDashboard() {
                   </ul>
                 </div>
               )}
-              {overrideRequests.length === 0 && pendingLoans.length === 0 && pendingStaff.length === 0 && pendingNjangi.length === 0 && (
+              {overrideRequests.length === 0 && pendingLoans.length === 0 && pendingStaff.length === 0 && pendingNjangi.length === 0 && pendingTransfers.length === 0 && (
                 <div className="p-8 text-center text-gray-500 dark:text-slate-400">
                   <CheckCircleIcon className="h-12 w-12 mx-auto mb-2 text-green-500 opacity-50" />
                   <p className="font-bold uppercase tracking-widest text-sm">Inbox Zero</p>
@@ -403,11 +493,13 @@ export default function OpsManagerDashboard() {
         </div>
       </div>
 
-      {/* Approve Override Modal */}
+      {/* Override Action Modal */}
       {overrideModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl max-w-sm w-full p-6">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">Approve Override</h3>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2 uppercase">
+              {overrideAction === 'APPROVE' ? 'Approve' : 'Reject'} Override
+            </h3>
             <p className="text-sm text-gray-600 dark:text-slate-400 mb-4">
               {overrideModal.teller_name}: {formatCurrency(overrideModal.amount)} — Member #{overrideModal.member_id_display || overrideModal.account_number}
             </p>
@@ -420,12 +512,23 @@ export default function OpsManagerDashboard() {
               placeholder="••••"
             />
             <div className="flex gap-2">
-              <button onClick={() => { setOverrideModal(null); setOverridePin(''); }} className="flex-1 py-2 border border-gray-300 rounded-xl font-bold">Cancel</button>
-              <button onClick={handleApproveOverride} className="flex-1 py-2 bg-green-600 text-white rounded-xl font-bold">Approve</button>
+              <button
+                onClick={() => { setOverrideModal(null); setOverridePin(''); }}
+                className="flex-1 py-2 border border-gray-300 rounded-xl font-bold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleOverrideSubmit}
+                className={`flex-1 py-2 text-white rounded-xl font-bold ${overrideAction === 'APPROVE' ? 'bg-green-600' : 'bg-red-600'}`}
+              >
+                {overrideAction === 'APPROVE' ? 'Approve' : 'Reject'}
+              </button>
             </div>
           </div>
         </div>
       )}
+
 
       {/* Njangi Approval Modal */}
       {njangiApprovalModal && (
@@ -500,6 +603,89 @@ export default function OpsManagerDashboard() {
             <div className="flex gap-2">
               <button onClick={() => setVaultDropModal(false)} className="flex-1 py-2 border rounded-xl font-bold">Cancel</button>
               <button onClick={handleVaultDrop} className="flex-1 py-2 bg-primary-600 text-white rounded-xl font-bold">Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Treasury Transfer Verification Modal */}
+      {transferModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl max-w-sm w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">Verify Cash Transfer</h3>
+            <div className="p-4 rounded-xl bg-gray-50 dark:bg-slate-800 mb-4 border border-gray-100 dark:border-slate-700">
+              <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Details</p>
+              <p className="text-sm font-medium text-gray-900 dark:text-white">
+                {transferModal.transfer_type.replace(/_/g, ' ')}
+              </p>
+              <p className="text-2xl font-black text-primary-600 mt-1">
+                {formatCurrency(transferModal.amount)}
+              </p>
+              <p className="text-xs text-gray-500 mt-2">
+                From: {transferModal.creator_name || 'Staff member'}<br />
+                Ref: {transferModal.transfer_ref}
+              </p>
+            </div>
+
+            <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Authorization PIN</label>
+            <input
+              type="password"
+              value={transferPin}
+              onChange={(e) => setTransferPin(e.target.value)}
+              className="w-full px-4 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-white mb-6"
+              placeholder="••••"
+            />
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleApproveTransfer(false)}
+                className="flex-1 py-2 text-red-600 font-bold border border-red-200 rounded-xl hover:bg-red-50"
+              >
+                Reject
+              </button>
+              <button
+                onClick={() => handleApproveTransfer(true)}
+                className="flex-1 py-2 bg-primary-600 text-white rounded-xl font-bold hover:bg-primary-700"
+              >
+                Accept
+              </button>
+              <button onClick={() => { setTransferModal(null); setTransferPin(''); }} className="py-2 px-4 text-gray-500 font-medium text-xs">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Genesis Injection / Vault Adjustment Modal */}
+      {showAdjustmentModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl max-w-sm w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">Genesis Vault Injection</h3>
+            <p className="text-xs text-gray-500 mb-4">Set the initial physical cash balance against Retained Earnings (Capital).</p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Amount (FCFA)</label>
+                <input
+                  type="number"
+                  value={adjustmentAmount}
+                  onChange={(e) => setAdjustmentAmount(e.target.value)}
+                  className="w-full px-4 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 font-bold text-xl"
+                  placeholder="50,000,000"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Description</label>
+                <textarea
+                  value={adjustmentDesc}
+                  onChange={(e) => setAdjustmentDesc(e.target.value)}
+                  className="w-full px-4 py-2 rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
+                  rows={2}
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button onClick={() => setShowAdjustmentModal(false)} className="flex-1 py-2 border border-gray-300 rounded-xl font-bold">Cancel</button>
+                <button onClick={handleVaultAdjustment} className="flex-1 py-2 bg-purple-600 text-white rounded-xl font-bold">Inject Capital</button>
+              </div>
             </div>
           </div>
         </div>

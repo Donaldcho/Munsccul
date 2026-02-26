@@ -10,6 +10,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { eodApi } from '../../services/api'
 import { formatCurrency } from '../../utils/formatters'
+import { getErrorMessage } from '../../utils/errorUtils'
 import toast from 'react-hot-toast'
 
 interface EODWizardProps {
@@ -48,7 +49,7 @@ export default function EODWizard({ onClose, onComplete }: EODWizardProps) {
             fetchStatus()
             setStep(4)
         } catch (e: any) {
-            toast.error(e.response?.data?.detail || "Interest accrual failed")
+            toast.error(getErrorMessage(e, "Interest accrual failed"))
         } finally {
             setLoading(false)
         }
@@ -61,7 +62,7 @@ export default function EODWizard({ onClose, onComplete }: EODWizardProps) {
             toast.success(res.data.message)
             onComplete()
         } catch (e: any) {
-            toast.error(e.response?.data?.detail || "Final closure failed")
+            toast.error(getErrorMessage(e, "Final closure failed"))
         } finally {
             setLoading(false)
         }

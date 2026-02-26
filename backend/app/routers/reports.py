@@ -19,46 +19,46 @@ async def get_dashboard(
     db: Session = Depends(get_db)
 ):
     """Get high-level dashboard statistics for Admin/Manager views"""
-    members_total = db.query(models.Member).count()
-    
-    accounts_total = db.query(models.Account).count()
-    total_deposits = db.query(func.sum(models.Account.balance)).filter(
-        models.Account.account_type.in_([models.AccountType.SAVINGS, models.AccountType.CURRENT, models.AccountType.FIXED_DEPOSIT])
-    ).scalar() or 0
-    
-    loans_outstanding = db.query(func.sum(models.Loan.amount_outstanding)).filter(
-        models.Loan.status.in_([models.LoanStatus.ACTIVE, models.LoanStatus.DELINQUENT])
-    ).scalar() or 0
-    
-    today = date.today()
-    disbursed_today = db.query(func.sum(models.Loan.principal_amount)).filter(
-        func.date(models.Loan.disbursement_date) == today
-    ).scalar() or 0
-    
-    collections_today = db.query(func.sum(models.Transaction.amount)).filter(
-        models.Transaction.transaction_type == models.TransactionType.LOAN_REPAYMENT,
-        func.date(models.Transaction.created_at) == today
-    ).scalar() or 0
-    
-    pending_approvals = (
-        db.query(models.Transaction).filter(models.Transaction.sync_status == models.SyncStatus.PENDING).count() +
-        db.query(models.Loan).filter(models.Loan.status == models.LoanStatus.PENDING_REVIEW).count() +
-        db.query(models.User).filter(models.User.approval_status == models.UserApprovalStatus.PENDING).count()
-    )
+    try:
+        members_total = db.query(models.Member).count()
+        
+        accounts_total = db.query(models.Account).count()
+        total_deposits = db.query(func.sum(models.Account.balance)).filter(
+            models.Account.account_type.in_([models.AccountType.SAVINGS, models.AccountType.CURRENT, models.AccountType.FIXED_DEPOSIT])
+        ).scalar() or 0
+        
+        loans_outstanding = db.query(func.sum(models.Loan.amount_outstanding)).filter(
+            models.Loan.status.in_([models.LoanStatus.ACTIVE, models.LoanStatus.DELINQUENT])
+        ).scalar() or 0
+        
+        today = date.today()
+        disbursed_today = db.query(func.sum(models.Loan.principal_amount)).filter(
+            func.date(models.Loan.disbursement_date) == today
+        ).scalar() or 0
+        
+        collections_today = db.query(func.sum(models.Transaction.amount)).filter(
+            models.Transaction.transaction_type == models.TransactionType.LOAN_REPAYMENT,
+            func.date(models.Transaction.created_at) == today
+        ).scalar() or 0
+        
+        pending_approvals = (
+            db.query(models.Transaction).filter(models.Transaction.sync_status == models.SyncStatus.PENDING).count() +
+            db.query(models.Loan).filter(models.Loan.status == models.LoanStatus.PENDING_REVIEW).count() +
+            db.query(models.User).filter(models.User.approval_status == models.UserApprovalStatus.PENDING).count()
+        )
 
-    dashboard_data = {
-        "accounts": {"total": accounts_total, "total_deposits": float(total_deposits)},
-        "loans": {"total_outstanding": float(loans_outstanding), "disbursed_today": float(disbursed_today), "collections_today": float(collections_today)},
-        "pending_approvals": pending_approvals
-    }
-    
-    # Only expose member counts to non-admins (KYC Officers/Managers)
-    if current_user.role != models.UserRole.SYSTEM_ADMIN:
-        dashboard_data["members"] = {"total": members_total}
-    else:
-        dashboard_data["members"] = {"total": "RESTRICTED"}
-
-    return dashboard_data
+        dashboard_data = {
+            "accounts": {"total": accounts_total, "total_deposits": float(total_deposits)},
+            "loans": {"total_outstanding": float(loans_outstanding), "disbursed_today": float(disbursed_today), "collections_today": float(collections_today)},
+            "pending_approvals": pending_approvals,
+            "members": {"total": members_total}
+        }
+        
+        return dashboard_data
+    except Exception as e:
+        import traceback
+        logger.error(f"DASHBOARD ERROR: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/audit-logs", response_model=List[schemas.AuditLogResponse])
@@ -90,6 +90,20 @@ def handle_export(format_type: str, report_name: str, title: str, data: any):
         if isinstance(data, dict):
             if "items" in data:
                  export_data = data["items"]
+            elif "rows" in data:
+                 # Trial balance new format
+                 export_data = data["rows"]
+                 # Append totals row
+                 t = data.get("totals", {})
+                 export_data = export_data + [{
+                     "account_code": "",
+                     "account_name": "TOTALS",
+                     "account_type": "",
+                     "opening_balance": t.get("opening_balance", 0),
+                     "debit": t.get("debit", 0),
+                     "credit": t.get("credit", 0),
+                     "closing_balance": t.get("net_balance", 0)
+                 }]
             elif "assets" in data:
                  # Flatten for balance sheet
                  export_data = data["assets"]["items"] + [{"account_code": "", "account_name": "---", "balance": ""}] + \
@@ -100,13 +114,29 @@ def handle_export(format_type: str, report_name: str, title: str, data: any):
                  # Ensure all rows have all keys for the simple PDF table generator
                  keys = ["description", "corp_banks", "mf_balico", "mf_a", "mf_glovic", "cash", "mobile_om", "mobile_mtn", "total", "refs", "comments"]
                  export_data = [data["brought_forward"]]
-                 for section_name, rows in data["sections"].items():
+                 
+                 # Map sections to friendly names
+                 section_titles = {
+                     "INFLOWS": "INFLOWS",
+                     "EXPENSES_A": "A) CASH EXPENSES (office)",
+                     "EXPENSES_B": "B) EXPENSES CLIENT",
+                     "PROJECTED_A": "A) SALARIES",
+                     "PROJECTED_B": "B) LOANS",
+                     "PROJECTED_C": "D) TAXATION AND CNPS"
+                 }
+                 
+                 for section_key, rows in data["sections"].items():
+                     # Header row for section
+                     header_row = {k: "" for k in keys}
+                     header_row["description"] = f"--- {section_titles.get(section_key, section_key)} ---"
+                     export_data.append(header_row)
+                     
                      if rows:
-                         # Header row with all keys empty except description
-                         header_row = {k: "" for k in keys}
-                         header_row["description"] = f"--- {section_name} ---"
-                         export_data.append(header_row)
                          export_data.extend(rows)
+                     else:
+                         empty_row = {k: "" for k in keys}
+                         empty_row["description"] = "(No transactions)"
+                         export_data.append(empty_row)
             elif "buckets" in data:
                  export_data = [
                       {"category": "Current", "count": data["buckets"]["current"]["count"], "amount": data["buckets"]["current"]["principal_outstanding"]},

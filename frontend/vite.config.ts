@@ -15,7 +15,6 @@ export default defineConfig({
       },
       '/ws': {
         target: process.env.VITE_API_PROXY_TARGET || 'http://backend:8000',
-        changeOrigin: true,
         ws: true,
       },
     },

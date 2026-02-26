@@ -201,6 +201,33 @@ async def get_member_by_member_id(
     return schemas.MemberDetailResponse.model_validate(member)
 
 
+@router.get("/by-account/{account_id}", response_model=schemas.MemberDetailResponse)
+async def get_member_by_account_id(
+    request: Request,
+    account_id: int,
+    current_user: models.User = Depends(require_member_access),
+    db: Session = Depends(get_db)
+):
+    """
+    Get member details via an associated account ID
+    """
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found"
+        )
+    
+    member = db.query(models.Member).filter(models.Member.id == account.member_id).first()
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member associated with this account not found"
+        )
+    
+    return schemas.MemberDetailResponse.model_validate(member)
+
+
 @router.put("/{member_id}", response_model=schemas.MemberResponse)
 async def update_member(
     request: Request,

@@ -2,7 +2,7 @@ import axios from 'axios'
 
 // Replace with your machine's IP if testing on a real device
 // Example: http://192.168.1.15:8000/api/v1
-const BASE_URL = 'https://14ff-136-158-27-232.ngrok-free.app/api/v1'
+const BASE_URL = 'https://38bf-136-158-27-232.ngrok-free.app/api/v1'
 
 export const api = axios.create({
     baseURL: BASE_URL,

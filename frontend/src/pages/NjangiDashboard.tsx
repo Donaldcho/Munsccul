@@ -11,6 +11,7 @@ import {
     XMarkIcon
 } from '@heroicons/react/24/outline'
 import { njangiApi } from '../services/njangiApi'
+import { mobileMoneyApi } from '../services/api'
 import { useAuthStore } from '../stores/authStore'
 import { formatCurrency } from '../utils/formatters'
 import toast from 'react-hot-toast'
@@ -61,13 +62,27 @@ export default function NjangiDashboard() {
         if (!selectedGroup || !ledger) return
 
         try {
-            await njangiApi.recordContribution({
-                cycle_id: ledger.cycle_id || 1,
-                member_id: 1, // Placeholder
-                amount_paid: amount,
-                payment_channel: channel
-            })
-            toast.success('Contribution recorded successfully!')
+            if (channel === 'MTN_MOMO' || channel === 'ORANGE_MONEY') {
+                const phone = prompt(`Please enter your ${channel} phone number (e.g. 671234567):`)
+                if (!phone) return
+
+                await mobileMoneyApi.collect({
+                    provider: channel,
+                    phone_number: phone,
+                    amount: amount,
+                    account_id: 1, // Assume main or internal settling account
+                    description: `Njangi contribution for Cycle ${ledger.cycle_id}`
+                })
+                toast.success(`${channel} Request Sent! Please check your phone to confirm the payment.`)
+            } else {
+                await njangiApi.recordContribution({
+                    cycle_id: ledger.cycle_id || 1,
+                    member_id: 1, // Placeholder
+                    amount_paid: amount,
+                    payment_channel: channel
+                })
+                toast.success('Contribution recorded successfully!')
+            }
             setIsContributing(false)
             fetchData()
         } catch (error) {

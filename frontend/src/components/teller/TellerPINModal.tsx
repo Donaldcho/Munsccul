@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { XMarkIcon, ShieldCheckIcon } from '@heroicons/react/24/outline';
+import { tellerApi } from '../../services/api';
 
 interface TellerPINModalProps {
     isOpen: boolean;
     onClose: () => void;
     onSuccess: () => void;
     amount: number;
-    type: 'DEPOSIT' | 'WITHDRAWAL';
+    type: 'DEPOSIT' | 'WITHDRAWAL' | 'NJANGI' | 'MOMO_DEPOSIT' | 'MOMO_WITHDRAWAL';
 }
 
 export const TellerPINModal: React.FC<TellerPINModalProps> = ({ isOpen, onClose, onSuccess, amount, type }) => {
     const [pin, setPin] = useState(['', '', '', '']);
     const [error, setError] = useState(false);
+    const [isVerifying, setIsVerifying] = useState(false);
     const inputRefs = [
         useRef<HTMLInputElement>(null),
         useRef<HTMLInputElement>(null),
@@ -23,6 +25,7 @@ export const TellerPINModal: React.FC<TellerPINModalProps> = ({ isOpen, onClose,
         if (isOpen) {
             setPin(['', '', '', '']);
             setError(false);
+            setIsVerifying(false);
             setTimeout(() => inputRefs[0].current?.focus(), 100);
         }
     }, [isOpen]);
@@ -44,20 +47,25 @@ export const TellerPINModal: React.FC<TellerPINModalProps> = ({ isOpen, onClose,
         if (e.key === 'Backspace' && !pin[index] && index > 0) {
             inputRefs[index - 1].current?.focus();
         }
-        if (e.key === 'Enter' && pin.every(p => p !== '')) {
+        if (e.key === 'Enter' && pin.every((p: string) => p !== '')) {
             handleSubmit();
         }
     };
 
-    const handleSubmit = () => {
+    const handleSubmit = async () => {
         const fullPin = pin.join('');
-        // Simulated PIN check - in production this would verify against authStore/API
-        if (fullPin === '1234') { // Mock PIN
+        setIsVerifying(true);
+        setError(false);
+
+        try {
+            await tellerApi.verifyPin({ pin: fullPin });
             onSuccess();
-        } else {
+        } catch (err: any) {
             setError(true);
             setPin(['', '', '', '']);
             inputRefs[0].current?.focus();
+        } finally {
+            setIsVerifying(false);
         }
     };
 
@@ -86,7 +94,7 @@ export const TellerPINModal: React.FC<TellerPINModalProps> = ({ isOpen, onClose,
                 </div>
 
                 <div className="flex justify-center space-x-4 mb-8">
-                    {pin.map((p, i) => (
+                    {pin.map((p: string, i: number) => (
                         <input
                             key={i}
                             ref={inputRefs[i]}
@@ -105,10 +113,11 @@ export const TellerPINModal: React.FC<TellerPINModalProps> = ({ isOpen, onClose,
 
                 <button
                     onClick={handleSubmit}
-                    disabled={pin.some(p => p === '')}
-                    className="w-full py-4 bg-slate-900 dark:bg-primary-600 text-white font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-primary-500/10 hover:shadow-primary-500/30 active:scale-95 transition-all disabled:opacity-50"
+                    disabled={pin.some((p: string) => p === '') || isVerifying}
+                    className="w-full py-4 bg-slate-900 dark:bg-primary-600 text-white font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-primary-500/10 hover:shadow-primary-500/30 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center space-x-2"
                 >
-                    Confirm & Execute
+                    {isVerifying && <div className="h-4 w-4 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>}
+                    <span>{isVerifying ? 'Verifying...' : 'Confirm & Execute'}</span>
                 </button>
 
                 <p className="text-center text-[10px] text-slate-400 uppercase tracking-widest mt-4">Authorized Teller: {localStorage.getItem('user_full_name') || 'Teller'}</p>

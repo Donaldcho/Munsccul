@@ -5,9 +5,10 @@ import {
   MagnifyingGlassIcon,
   UserCircleIcon,
   PhoneIcon,
-  MapPinIcon
+  MapPinIcon,
+  CameraIcon
 } from '@heroicons/react/24/outline'
-import { membersApi } from '../services/api'
+import { membersApi, kycApi } from '../services/api'
 import { formatDate, formatPhone } from '../utils/formatters'
 import toast from 'react-hot-toast'
 
@@ -28,6 +29,7 @@ export default function Members() {
   const [isLoading, setIsLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
+  const [isScanning, setIsScanning] = useState(false)
   const [newMember, setNewMember] = useState({
     first_name: '',
     last_name: '',
@@ -58,6 +60,35 @@ export default function Members() {
       toast.error('Failed to fetch members')
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleScanID = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    try {
+      setIsScanning(true)
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const response = await kycApi.uploadDocument(formData)
+      const data = response.data
+
+      toast.success('ID Scanned successfully via Edge AI')
+
+      // Update newMember state with extracted data
+      setNewMember(prev => ({
+        ...prev,
+        first_name: data.first_name || prev.first_name,
+        last_name: data.last_name || prev.last_name,
+        national_id: data.id_number || prev.national_id,
+      }))
+    } catch (error) {
+      toast.error('Failed to scan ID using OCR')
+    } finally {
+      setIsScanning(false)
+      e.target.value = '' // reset input
     }
   }
 
@@ -216,8 +247,28 @@ export default function Members() {
           <div className="flex min-h-screen items-center justify-center p-4">
             <div className="fixed inset-0 bg-gray-500 bg-opacity-75 dark:bg-black dark:bg-opacity-70" onClick={() => setShowAddModal(false)} />
             <div className="relative bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-              <div className="px-6 py-4 border-b border-gray-200 dark:border-slate-700">
+              <div className="px-6 py-4 border-b border-gray-200 dark:border-slate-700 flex justify-between items-center">
                 <h3 className="text-lg font-medium text-gray-900 dark:text-white">Add New Member</h3>
+                <div>
+                  <input
+                    type="file"
+                    id="id-scanner-upload"
+                    accept="image/jpeg, image/png"
+                    className="hidden"
+                    onChange={handleScanID}
+                  />
+                  <label
+                    htmlFor="id-scanner-upload"
+                    className={`btn-outline inline-flex items-center cursor-pointer ${isScanning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    {isScanning ? (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary-600 mr-2"></div>
+                    ) : (
+                      <CameraIcon className="mr-2 h-4 w-4" />
+                    )}
+                    {isScanning ? 'Scanning...' : 'Scan Smart ID (CNI)'}
+                  </label>
+                </div>
               </div>
               <form onSubmit={handleCreateMember} className="p-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -47,5 +47,4 @@ class EODLockoutMiddleware(BaseHTTPMiddleware):
                         logger.error(f"EOD Middleware error: {e}")
                     finally:
                         db.close()
-        
         return await call_next(request)

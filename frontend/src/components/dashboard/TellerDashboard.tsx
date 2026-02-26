@@ -12,9 +12,10 @@ import {
     HandRaisedIcon,
     CalculatorIcon
 } from '@heroicons/react/24/outline';
-import { membersApi, accountsApi, transactionsApi, queueApi, api } from '../../services/api';
+import { membersApi, accountsApi, transactionsApi, queueApi, mobileMoneyApi, tellerApi, treasuryApi, opsApi, api } from '../../services/api';
 import { njangiApi } from '../../services/njangiApi';
 import { formatCurrency } from '../../utils/formatters';
+import { getErrorMessage } from '../../utils/errorUtils';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../../stores/authStore';
 
@@ -31,14 +32,17 @@ export default function TellerDashboard() {
 
     // Member & Account Context
     const [member, setMember] = useState<any>(null);
+    console.log('DEBUG: Current Member State:', JSON.stringify(member, null, 2));
     const [account, setAccount] = useState<any>(null);
     const [photoUrl, setPhotoUrl] = useState<string | null>(null);
     const [signatureUrl, setSignatureUrl] = useState<string | null>(null);
 
     // Transaction State
-    const [txType, setTxType] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'NJANGI' | null>(null);
+    const [txType, setTxType] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'NJANGI' | 'MOMO_DEPOSIT' | 'MOMO_WITHDRAWAL' | null>(null);
     const [amount, setAmount] = useState<number>(0);
     const [amountInput, setAmountInput] = useState<string>('');
+    const [momoPhone, setMomoPhone] = useState<string>('');
+    const [momoProvider, setMomoProvider] = useState<string>('MTN_MOMO');
 
     // Njangi State
     const [searchMode, setSearchMode] = useState<'PERSONAL' | 'NJANGI'>('PERSONAL');
@@ -53,13 +57,15 @@ export default function TellerDashboard() {
     const [focusMode, setFocusMode] = useState(false);
     const [showDenomCalc, setShowDenomCalc] = useState(false);
     const [showOverride, setShowOverride] = useState(false);
-    const [showVaultDropOverride, setShowVaultDropOverride] = useState(false);
     const [showEod, setShowEod] = useState(false);
     const [showPinModal, setShowPinModal] = useState(false);
+    const [showTreasuryModal, setShowTreasuryModal] = useState(false);
+    const [treasuryType, setTreasuryType] = useState<'VAULT_TO_TELLER' | 'TELLER_TO_VAULT'>('VAULT_TO_TELLER');
+    const [treasuryAmount, setTreasuryAmount] = useState('');
 
     // Drawer Ticker State
     const TELLER_LIMIT = 2000000; // 2M FCFA Strict Limit
-    const [simDrawerBalance, setSimDrawerBalance] = useState(500000);
+    const [simDrawerBalance, setSimDrawerBalance] = useState(0);
     const [totalIn, setTotalIn] = useState(0);
     const [totalOut, setTotalOut] = useState(0);
     const isOverLimit = simDrawerBalance >= TELLER_LIMIT;
@@ -72,10 +78,19 @@ export default function TellerDashboard() {
     const searchInputRef = useRef<HTMLInputElement>(null);
     const amountInputRef = useRef<HTMLInputElement>(null);
 
+    const fetchDrawerBalance = async () => {
+        try {
+            const res = await tellerApi.getBalance();
+            setSimDrawerBalance(res.data.balance);
+        } catch (e) {
+            console.error('Failed to fetch drawer balance', e);
+        }
+    };
+
     // Focus Search on load
     useEffect(() => {
         searchInputRef.current?.focus();
-        // Fetch current drawer state if endpoint exists, else use simulated
+        fetchDrawerBalance();
     }, []);
 
     // Keyboard Shortcuts (F1, F2, Enter)
@@ -132,6 +147,28 @@ export default function TellerDashboard() {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [handleKeyDown]);
+
+    // WebSocket for Real-time Treasury & Balance Updates
+    useEffect(() => {
+        if (!user?.branch_id) return;
+
+        const url = opsApi.getOpsInboxWebSocketUrl(user.branch_id);
+        const ws = new WebSocket(url);
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                // Refresh balance if treasury update received for this branch
+                if (data.type === 'TREASURY_UPDATE' || data.type === 'TELLER_BALANCE_UPDATE') {
+                    fetchDrawerBalance();
+                }
+            } catch (e) {
+                console.error('WS Error:', e);
+            }
+        };
+
+        return () => ws.close();
+    }, [user?.branch_id]);
 
     const resetTerminal = () => {
         setMember(null);
@@ -203,16 +240,18 @@ export default function TellerDashboard() {
                     resetTerminal();
                 }
             } else {
-                const res = await accountsApi.getAll({ limit: 100 });
-                const match = res.data.find((a: any) => a.account_number.toLowerCase() === accountQuery.toLowerCase().trim());
-
-                if (match) {
+                try {
+                    const res = await accountsApi.getByNumber(accountQuery.trim());
+                    const match = res.data;
                     setAccount(match);
-                    const memRes = await membersApi.getById(match.member_id);
+
+                    // Direct lookup by account primary key
+                    const memRes = await membersApi.getByAccountId(match.id);
+                    console.log('Member fetched:', memRes.data);
                     setMember(memRes.data);
-                    loadMedia(match.member_id);
+                    loadMedia(memRes.data.id);
                     toast.success('Member Verified');
-                } else {
+                } catch (err) {
                     toast.error('Account not found');
                     resetTerminal();
                 }
@@ -231,13 +270,39 @@ export default function TellerDashboard() {
         amountInputRef.current?.focus();
     };
 
-    const handleVaultDrop = async () => {
-        setShowVaultDropOverride(true);
+    const handleTreasuryRequest = async () => {
+        const amt = parseFloat(treasuryAmount);
+        if (isNaN(amt) || amt <= 0) {
+            toast.error('Enter valid amount');
+            return;
+        }
+
+        try {
+            setIsProcessing(true);
+            await treasuryApi.requestTransfer({
+                amount: amt,
+                transfer_type: treasuryType,
+                description: `${treasuryType === 'VAULT_TO_TELLER' ? 'Morning Float' : 'Vault Drop'} requested by ${user?.username}`
+            });
+            toast.success(`${treasuryType === 'VAULT_TO_TELLER' ? 'Float' : 'Vault drop'} request sent to manager`);
+            setShowTreasuryModal(false);
+            setTreasuryAmount('');
+        } catch (e: any) {
+            toast.error(getErrorMessage(e, 'Request failed'));
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     const handleConfirmTransaction = () => {
         if (searchMode === 'PERSONAL' && (!account || !txType || amount <= 0)) return;
         if (searchMode === 'NJANGI' && (!njangiGroup || !selectedNjangiMember || txType !== 'NJANGI' || amount <= 0)) return;
+
+        if (txType?.startsWith('MOMO_') && (!momoPhone || momoPhone.length < 9)) {
+            toast.error('Enter valid MoMo phone number');
+            return;
+        }
+
         setShowPinModal(true);
     };
 
@@ -299,17 +364,39 @@ export default function TellerDashboard() {
                     await transactionsApi.deposit(payload);
                     setSimDrawerBalance(prev => prev + amount);
                     setTotalIn(prev => prev + amount);
+                } else if (txType === 'MOMO_DEPOSIT') {
+                    await mobileMoneyApi.collect({
+                        provider: momoProvider,
+                        phone_number: momoPhone,
+                        amount: amount,
+                        account_id: account.id,
+                        description: `MoMo Deposit via ${momoProvider}`
+                    });
+                    // Note: This doesn't affect terminal cash balance until settled, but we can track it as Total In
+                    setTotalIn(prev => prev + amount);
                 } else if (txType === 'WITHDRAWAL') {
                     await transactionsApi.withdraw(payload);
                     setSimDrawerBalance(prev => prev - amount);
+                    setTotalOut(prev => prev + amount);
+                } else if (txType === 'MOMO_WITHDRAWAL') {
+                    await mobileMoneyApi.disburse({
+                        provider: momoProvider,
+                        phone_number: momoPhone,
+                        amount: amount,
+                        account_id: account.id,
+                        description: `MoMo Withdrawal to ${momoPhone}`
+                    });
                     setTotalOut(prev => prev + amount);
                 }
             }
 
             toast.success('Transaction Successful');
+            await fetchDrawerBalance();
             toast('Printing Receipt (2 Copies)...', { icon: '🖨️', duration: 3000 });
-            window.print();
-            resetTerminal();
+            setTimeout(() => {
+                window.print();
+                resetTerminal();
+            }, 100);
         } catch (err: any) {
             // Error handled by interceptor
         } finally {
@@ -398,12 +485,26 @@ export default function TellerDashboard() {
                                 >
                                     <CalculatorIcon className="h-5 w-5" />
                                 </button>
-                                <button
-                                    onClick={handleVaultDrop}
-                                    className="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-black rounded-lg shadow-sm transition-all"
-                                >
-                                    VAULT DROP
-                                </button>
+                                <div className="flex flex-col gap-1">
+                                    <button
+                                        onClick={() => { setTreasuryType('VAULT_TO_TELLER'); setTreasuryAmount(''); setShowTreasuryModal(true); }}
+                                        className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white text-[8px] font-black rounded shadow-sm whitespace-nowrap"
+                                    >
+                                        REQUEST FLOAT
+                                    </button>
+                                    <button
+                                        onClick={() => { setTreasuryType('TELLER_TO_VAULT'); setTreasuryAmount(`${Math.max(0, simDrawerBalance - 100000)}`); setShowTreasuryModal(true); }}
+                                        className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white text-[8px] font-black rounded shadow-sm whitespace-nowrap"
+                                    >
+                                        VAULT DROP
+                                    </button>
+                                    <button
+                                        onClick={() => setShowEod(true)}
+                                        className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white text-[8px] font-black rounded shadow-sm whitespace-nowrap"
+                                    >
+                                        CLOSE DRAWER
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -492,12 +593,36 @@ export default function TellerDashboard() {
                                         </div>
                                     </div>
 
-                                    <div className="text-center mb-12">
+                                    <div className="text-center mb-8 p-4 bg-primary-50 dark:bg-primary-900/10 rounded-3xl border-2 border-primary-100 dark:border-primary-900/30 w-full">
                                         <p className="text-[10px] font-black text-primary-500 uppercase tracking-[0.2em] mb-2">Authenticated Member</p>
-                                        <h2 className="text-4xl font-black text-slate-900 dark:text-white uppercase leading-tight tracking-tighter">
-                                            {member.first_name} <br /> {member.last_name}
+                                        <h2 className="text-5xl font-black text-primary-600 dark:text-primary-400 uppercase leading-none tracking-tighter mb-1">
+                                            {member.first_name || 'MEMBER'}
                                         </h2>
-                                        <p className="mt-2 text-sm font-bold text-slate-400 font-mono">ID: {member.member_id}</p>
+                                        <h2 className="text-4xl font-black text-slate-900 dark:text-white uppercase leading-none tracking-tighter">
+                                            {member.last_name || ''}
+                                        </h2>
+                                        <p className="mt-4 text-sm font-bold text-slate-400 font-mono">ID: {member.member_id}</p>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4 w-full mb-8">
+                                        <div className="p-3 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800">
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Gender</p>
+                                            <p className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase">{member.gender || 'N/A'}</p>
+                                        </div>
+                                        <div className="p-3 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800">
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">National ID</p>
+                                            <p className="text-sm font-bold text-slate-700 dark:text-slate-300 font-mono italic">{member.national_id || 'NOT VERIFIED'}</p>
+                                        </div>
+                                        <div className="p-3 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800">
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Phone</p>
+                                            <p className="text-sm font-bold text-slate-700 dark:text-slate-300">{member.phone_primary}</p>
+                                        </div>
+                                        <div className="p-3 bg-slate-50 dark:bg-slate-900/30 rounded-xl border border-slate-100 dark:border-slate-800">
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Trust Score</p>
+                                            <p className={`text-sm font-black ${member.trust_score >= 80 ? 'text-green-500' : member.trust_score >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
+                                                {member.trust_score}%
+                                            </p>
+                                        </div>
                                     </div>
 
                                     <div className="w-full mt-auto bg-slate-50 dark:bg-slate-900/50 p-6 rounded-3xl border-2 border-dashed border-slate-200 dark:border-slate-800">
@@ -525,11 +650,15 @@ export default function TellerDashboard() {
                                 <div className="p-8 bg-slate-900 text-white flex justify-between items-center overflow-hidden relative">
                                     <div className="absolute top-0 right-0 h-full w-32 bg-primary-600 transform skew-x-12 translate-x-16 opacity-10" />
                                     <div>
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Effective Bal</p>
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
+                                            Available Balance
+                                        </p>
                                         <h3 className="text-4xl font-black tracking-tighter text-primary-400">{formatCurrency(account.available_balance)}</h3>
                                     </div>
                                     <div className="text-right">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase mb-1">ACC #</p>
+                                        <p className="text-[10px] font-black text-slate-400 uppercase mb-1">
+                                            {member ? `${member.first_name} ${member.last_name}` : 'ACCOUNT'}
+                                        </p>
                                         <p className="font-mono text-lg font-black">{account.account_number}</p>
                                     </div>
                                 </div>
@@ -537,7 +666,9 @@ export default function TellerDashboard() {
                                 <div className="p-8 bg-indigo-900 text-white flex justify-between items-center overflow-hidden relative">
                                     <div className="absolute top-0 right-0 h-full w-32 bg-indigo-600 transform skew-x-12 translate-x-16 opacity-10" />
                                     <div>
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Current Cycle Progress</p>
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">
+                                            {selectedNjangiMember ? `Member #${selectedNjangiMember.member_id}` : 'Current Cycle Progress'}
+                                        </p>
                                         <h3 className="text-4xl font-black tracking-tighter text-indigo-400">{njangiCycle ? formatCurrency(njangiCycle.current_pot) : 'N/A'}</h3>
                                     </div>
                                     <div className="text-right">
@@ -609,6 +740,23 @@ export default function TellerDashboard() {
                                                     <p className="text-[10px] font-black text-slate-400 uppercase">Shortcut [F2]</p>
                                                 </div>
                                             </button>
+
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <button
+                                                    onClick={() => { setTxType('MOMO_DEPOSIT'); setFocusMode(true); setTimeout(() => amountInputRef.current?.focus(), 50); }}
+                                                    className="group py-6 border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-3xl flex flex-col items-center justify-center hover:border-amber-500 hover:bg-amber-50 transition-all"
+                                                >
+                                                    <MegaphoneIcon className="h-8 w-8 text-amber-600 mb-2" />
+                                                    <p className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-white">MoMo Collection</p>
+                                                </button>
+                                                <button
+                                                    onClick={() => { setTxType('MOMO_WITHDRAWAL'); setFocusMode(true); setTimeout(() => amountInputRef.current?.focus(), 50); }}
+                                                    className="group py-6 border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-3xl flex flex-col items-center justify-center hover:border-amber-600 hover:bg-amber-50 transition-all"
+                                                >
+                                                    <HandRaisedIcon className="h-8 w-8 text-amber-700 mb-2" />
+                                                    <p className="text-xs font-black uppercase tracking-widest text-slate-800 dark:text-white">MoMo Disburse</p>
+                                                </button>
+                                            </div>
                                         </div>
                                     )
                                 ) : (
@@ -616,7 +764,9 @@ export default function TellerDashboard() {
                                         <div className="flex justify-between items-center mb-8">
                                             <div className="flex items-center">
                                                 <div className={`h-3 w-3 rounded-full mr-3 animate-pulse ${txType === 'DEPOSIT' ? 'bg-green-500' : txType === 'NJANGI' ? 'bg-indigo-500' : 'bg-red-500'}`} />
-                                                <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-widest">{txType} MODE ACTIVE</h3>
+                                                <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-widest">
+                                                    {txType} MODE: {member ? `${member.first_name} ${member.last_name}` : (selectedNjangiMember ? `Member #${selectedNjangiMember.member_id}` : 'ACTIVE')}
+                                                </h3>
                                             </div>
                                             <button onClick={handleCancelTx} className="p-2 bg-slate-100 rounded-full text-slate-500 hover:text-red-500 transition-colors">
                                                 <XMarkIcon className="h-6 w-6" />
@@ -640,9 +790,29 @@ export default function TellerDashboard() {
                                                         handleConfirmTransaction();
                                                     }
                                                 }}
-                                                className={`w-full text-6xl font-black p-4 border-none bg-transparent outline-none text-right ${txType === 'DEPOSIT' ? 'text-green-600' : txType === 'NJANGI' ? 'text-indigo-600' : 'text-red-600'}`}
+                                                className={`w-full text-6xl font-black p-4 border-none bg-transparent outline-none text-right ${txType?.includes('DEPOSIT') ? 'text-green-600' : txType === 'NJANGI' ? 'text-indigo-600' : 'text-red-600'}`}
                                                 placeholder="0.00"
                                             />
+
+                                            {txType?.startsWith('MOMO_') && (
+                                                <div className="mt-4 p-6 bg-slate-100 dark:bg-slate-900 border-2 border-amber-500/20 rounded-3xl animate-in fade-in slide-in-from-bottom-2">
+                                                    <div className="flex justify-between items-center mb-4">
+                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Network Provider</p>
+                                                        <div className="flex space-x-2">
+                                                            <button onClick={() => setMomoProvider('MTN_MOMO')} className={`px-3 py-1 rounded-full text-[10px] font-black transition-all ${momoProvider === 'MTN_MOMO' ? 'bg-amber-400 text-slate-900 ring-4 ring-amber-400/20' : 'bg-slate-200 text-slate-500'}`}>MTN</button>
+                                                            <button onClick={() => setMomoProvider('ORANGE_MONEY')} className={`px-3 py-1 rounded-full text-[10px] font-black transition-all ${momoProvider === 'ORANGE_MONEY' ? 'bg-orange-500 text-white ring-4 ring-orange-500/20' : 'bg-slate-200 text-slate-500'}`}>ORANGE</button>
+                                                        </div>
+                                                    </div>
+                                                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Customer Phone Number</p>
+                                                    <input
+                                                        type="text"
+                                                        value={momoPhone}
+                                                        onChange={(e) => setMomoPhone(e.target.value)}
+                                                        className="w-full text-2xl font-black p-4 bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-2xl outline-none focus:border-amber-500 transition-all font-mono"
+                                                        placeholder="6xx xxx xxx"
+                                                    />
+                                                </div>
+                                            )}
                                             <div className="flex justify-between items-center py-4 border-t border-slate-50 mt-4">
                                                 <button onClick={() => setShowDenomCalc(true)} className="text-[10px] font-black text-primary-500 uppercase tracking-widest hover:underline">Denom Calculator</button>
                                                 <p className="text-[10px] font-black text-slate-300 uppercase">Ready for execution</p>
@@ -668,16 +838,6 @@ export default function TellerDashboard() {
 
             <CashDenominationCalculator isOpen={showDenomCalc} onClose={() => setShowDenomCalc(false)} onConfirm={handleDenomConfirm} />
             <ManagerOverrideModal isOpen={showOverride} onClose={() => setShowOverride(false)} amount={amount} onSuccess={(mId) => { setShowOverride(false); processTransaction(mId); }} />
-            <ManagerOverrideModal
-                isOpen={showVaultDropOverride}
-                onClose={() => setShowVaultDropOverride(false)}
-                amount={simDrawerBalance - 100000}
-                onSuccess={() => {
-                    setSimDrawerBalance(100000);
-                    toast.success('Vault Drop Confirmed: Cash Moved to Vault');
-                    setShowVaultDropOverride(false);
-                }}
-            />
             <BlindEODModal isOpen={showEod} onClose={() => setShowEod(false)} onSuccess={() => toast.success('Drawer Reconciled & Closed')} />
             <TellerPINModal
                 isOpen={showPinModal}
@@ -687,7 +847,107 @@ export default function TellerDashboard() {
                 type={txType || 'DEPOSIT'}
             />
 
-            {/* Print Template (Omitted details for brevity, same as original logic) */}
+            {showTreasuryModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl max-w-sm w-full p-8 border border-slate-200 dark:border-slate-800 animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center space-x-3 mb-6">
+                            <div className={`p-3 rounded-2xl ${treasuryType === 'VAULT_TO_TELLER' ? 'bg-blue-100 text-blue-600' : 'bg-amber-100 text-amber-600'}`}>
+                                {treasuryType === 'VAULT_TO_TELLER' ? <ArrowDownTrayIcon className="h-6 w-6" /> : <ArrowUpTrayIcon className="h-6 w-6" />}
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">
+                                    {treasuryType === 'VAULT_TO_TELLER' ? 'Request Float' : 'Vault Drop'}
+                                </h3>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Treasury Operation</p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Transfer Amount (FCFA)</label>
+                                <input
+                                    type="number"
+                                    value={treasuryAmount}
+                                    onChange={(e) => setTreasuryAmount(e.target.value)}
+                                    className="w-full text-3xl font-black p-4 bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl outline-none focus:border-primary-500 transition-all"
+                                    placeholder="0"
+                                />
+                            </div>
+
+                            <button
+                                onClick={handleTreasuryRequest}
+                                disabled={isProcessing || !treasuryAmount}
+                                className={`w-full py-4 text-white font-black rounded-2xl shadow-lg transition-all active:scale-95 disabled:bg-slate-200 disabled:text-slate-400 ${treasuryType === 'VAULT_TO_TELLER' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-amber-600 hover:bg-amber-700'}`}
+                            >
+                                {isProcessing ? 'PROCESSING...' : 'SEND REQUEST'}
+                            </button>
+                            <button
+                                onClick={() => setShowTreasuryModal(false)}
+                                className="w-full py-3 text-slate-400 text-xs font-black uppercase tracking-widest hover:text-slate-600"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Print Template */}
+            <div className="hidden print:block fixed inset-0 bg-white z-[9999] p-4 text-black font-mono text-[10px] leading-tight">
+                {[1, 2].map((copy) => (
+                    <div key={copy} className={`${copy === 1 ? 'border-b-2 border-dashed border-black pb-8 mb-8' : ''} w-[70mm]`}>
+                        <div className="text-center mb-4">
+                            <h2 className="text-sm font-bold uppercase">CamCCUL Banking System</h2>
+                            <p className="text-[8px]">Next-Gen Core Banking Solution</p>
+                            <p className="text-[8px]">Branch: {user?.branch_id || 'Main'}</p>
+                        </div>
+
+                        <div className="space-y-1">
+                            <div className="flex justify-between">
+                                <span>Date:</span>
+                                <span>{new Date().toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span>Transaction:</span>
+                                <span className="font-bold">{txType}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span>Member:</span>
+                                <span className="font-bold truncate max-w-[40mm]">
+                                    {member ? `${member.first_name} ${member.last_name}` : (selectedNjangiMember ? `Member #${selectedNjangiMember.member_id}` : 'N/A')}
+                                </span>
+                            </div>
+                            {account && (
+                                <div className="flex justify-between">
+                                    <span>Account:</span>
+                                    <span>{account.account_number}</span>
+                                </div>
+                            )}
+                            <div className="border-t border-black my-2" />
+                            <div className="flex justify-between text-base font-bold">
+                                <span>AMOUNT:</span>
+                                <span>{formatCurrency(amount)} FCFA</span>
+                            </div>
+                            <div className="border-b border-black my-2" />
+                            {account && (
+                                <div className="flex justify-between">
+                                    <span>New Balance:</span>
+                                    <span>{formatCurrency(account.available_balance + (txType === 'DEPOSIT' ? amount : -amount))} FCFA</span>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="mt-8 pt-4 border-t border-slate-200">
+                            <div className="flex justify-between italic text-[8px]">
+                                <span>Teller: {user?.full_name || 'System'}</span>
+                                <span>Copy: {copy === 1 ? 'CUSTOMER' : 'BANK'}</span>
+                            </div>
+                            <p className="text-center mt-4 text-[8px] uppercase font-bold tracking-widest">*** Thank you for banking with CamCCUL ***</p>
+                            <p className="text-center text-[6px] opacity-50 mt-1">Transaction verified via secure biometric & PIN protocol</p>
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }

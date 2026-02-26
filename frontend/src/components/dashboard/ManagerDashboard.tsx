@@ -13,13 +13,16 @@ import {
     ArrowPathIcon,
     Cog6ToothIcon
 } from '@heroicons/react/24/outline'
-import { usersApi, loansApi, transactionsApi, reportsApi, queueApi, opsApi, eodApi } from '../../services/api'
+import { usersApi, loansApi, transactionsApi, reportsApi, queueApi, opsApi, eodApi, intercomApi, treasuryApi } from '../../services/api'
+import { ArrowTrendingUpIcon } from '@heroicons/react/24/solid'
 import { useAuthStore } from '../../stores/authStore'
 import { formatCurrency } from '../../utils/formatters'
+import { getErrorMessage } from '../../utils/errorUtils'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import LoanProductsConfig from './LoanProductsConfig'
 import EODWizard from './EODWizard'
+import TreasuryTransferModal from './TreasuryTransferModal'
 
 interface OverrideRequest {
     id: number
@@ -40,6 +43,7 @@ export default function ManagerDashboard() {
     const [pendingUsers, setPendingUsers] = useState<any[]>([])
     const [loanApplications, setLoanApplications] = useState<any[]>([])
     const [overrideRequests, setOverrideRequests] = useState<OverrideRequest[]>([])
+    const [pendingTransfers, setPendingTransfers] = useState<any[]>([])
 
     // Zone 2: Liquidity Data
     const [liquidity, setLiquidity] = useState<any>(null)
@@ -53,22 +57,27 @@ export default function ManagerDashboard() {
     const [loading, setLoading] = useState(true)
     const [showEODWizard, setShowEODWizard] = useState(false)
     const [showConfig, setShowConfig] = useState(false)
+    const [showTreasuryModal, setShowTreasuryModal] = useState(false)
     const [overrideModal, setOverrideModal] = useState<OverrideRequest | null>(null)
+    const [overrideAction, setOverrideAction] = useState<'APPROVE' | 'REJECT'>('APPROVE')
     const [managerPin, setManagerPin] = useState('')
     const [limit, setLimit] = useState(0)
     const [selectedUser, setSelectedUser] = useState<any>(null)
+    const [transferModal, setTransferModal] = useState<any>(null)
+    const [transferPin, setTransferPin] = useState('')
 
     const wsRef = useRef<WebSocket | null>(null)
 
     const fetchAllData = async () => {
         try {
-            const [usersRes, loansRes, overridesRes, liqRes, qRes, eodRes] = await Promise.all([
+            const [usersRes, loansRes, overridesRes, liqRes, qRes, eodRes, treasuryRes] = await Promise.all([
                 usersApi.getAll(),
                 loansApi.getAll({ status: 'PENDING_REVIEW' }),
                 opsApi.getOverrideRequests({ branch_id: branchId }),
                 opsApi.getLiquidity(branchId),
                 queueApi.getStats().catch(() => ({ data: null })),
-                eodApi.getStatus()
+                eodApi.getStatus(),
+                treasuryApi.getPendingTransfers().catch(() => ({ data: [] }))
             ])
 
             setPendingUsers(usersRes.data.filter((u: any) => u.approval_status === 'PENDING') || [])
@@ -77,6 +86,7 @@ export default function ManagerDashboard() {
             setLiquidity(liqRes.data || null)
             setQueueStats(qRes.data || null)
             setBranchStatus(eodRes.data?.is_closed ? 'CLOSED' : (eodRes.data?.eod_locked ? 'EOD_IN_PROGRESS' : 'OPEN'))
+            setPendingTransfers(treasuryRes.data || [])
 
             // Fetch Liquidity Ratio
             try {
@@ -94,7 +104,7 @@ export default function ManagerDashboard() {
     useEffect(() => {
         fetchAllData()
 
-        // WebSocket for live override alerts — backend endpoint: /ws/branch/{branch_id}
+        // WebSocket for live override alerts — backend endpoint: /api/v1/branches/ws/{branch_id}
         let ws: WebSocket | null = null
         try {
             const wsUrl = opsApi.getOpsInboxWebSocketUrl(branchId)
@@ -104,7 +114,7 @@ export default function ManagerDashboard() {
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data)
-                    if (data.type === 'TELLER_OVERRIDE_REQUEST' || data.type === 'TELLER_OVERRIDE_RESOLVED' || data.type === 'TELLER_OVERRIDE_APPROVED' || data.type === 'TELLER_OVERRIDE_REJECTED') {
+                    if (data.type === 'TELLER_OVERRIDE_REQUEST' || data.type === 'TELLER_OVERRIDE_RESOLVED' || data.type === 'TREASURY_UPDATE') {
                         fetchAllData()
                     }
                 } catch (_) { /* ignore parse errors */ }
@@ -115,33 +125,45 @@ export default function ManagerDashboard() {
             wsRef.current = null
         }
         return () => {
-            if (wsRef.current) {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 wsRef.current.close()
-                wsRef.current = null
             }
+            wsRef.current = null
         }
     }, [branchId])
 
-    const handleApproveOverride = async () => {
+    const handleOverrideSubmit = async () => {
         if (!overrideModal || !managerPin) return
         try {
-            await opsApi.approveOverride(overrideModal.id, { manager_pin: managerPin })
-            toast.success('Transaction Approved Remotely')
+            if (overrideAction === 'APPROVE') {
+                await opsApi.approveOverride(overrideModal.id, { manager_pin: managerPin })
+                toast.success('Transaction Approved Remotely')
+            } else {
+                const reason = window.prompt("Reason for rejection:")
+                if (!reason || !reason.trim()) {
+                    toast.error("Rejection reason is required via Intercom policy")
+                    return
+                }
+                await opsApi.rejectOverride(overrideModal.id, { manager_pin: managerPin, comments: reason })
+                toast.success('Override Rejected')
+
+                // Dispatch justification to Teller via Intercom
+                try {
+                    await intercomApi.send({
+                        content: `Transaction Override Rejected: ${reason}`,
+                        receiver_id: overrideModal.teller_id,
+                        attached_entity_type: 'TRANSACTION',
+                        attached_entity_id: overrideModal.id.toString()
+                    })
+                } catch (err) {
+                    console.error('Failed to dispatch intercom message', err)
+                }
+            }
             setOverrideModal(null)
             setManagerPin('')
             fetchAllData()
         } catch (e: any) {
-            toast.error(e.response?.data?.detail || 'Approval failed')
-        }
-    }
-
-    const handleRejectOverride = async (id: number) => {
-        try {
-            await opsApi.rejectOverride(id)
-            toast.success('Override Rejected')
-            fetchAllData()
-        } catch (e) {
-            toast.error('Failed to reject')
+            toast.error(getErrorMessage(e, `Failed to ${overrideAction.toLowerCase()}`))
         }
     }
 
@@ -154,6 +176,25 @@ export default function ManagerDashboard() {
             fetchAllData()
         } catch (error: any) {
             toast.error('Activation failed')
+        }
+    }
+
+    const handleApproveTransfer = async (approved: boolean) => {
+        if (approved && !transferPin) {
+            toast.error('Enter your PIN')
+            return
+        }
+        try {
+            await treasuryApi.approveTransfer(transferModal.id, {
+                approved,
+                manager_pin: transferPin
+            })
+            toast.success(approved ? 'Transfer Approved & Ledger Posted' : 'Transfer Rejected')
+            setTransferModal(null)
+            setTransferPin('')
+            fetchAllData()
+        } catch (e: any) {
+            toast.error(getErrorMessage(e, 'Action failed'))
         }
     }
 
@@ -207,7 +248,7 @@ export default function ManagerDashboard() {
                                 <h2 className="text-2xl font-black text-slate-900 dark:text-white">Action Inbox</h2>
                             </div>
                             <span className="bg-slate-100 dark:bg-slate-800 px-4 py-1.5 rounded-full text-xs font-black text-slate-500 uppercase tracking-widest">
-                                {overrideRequests.length + pendingUsers.length + loanApplications.length} Items
+                                {overrideRequests.length + pendingUsers.length + loanApplications.length + pendingTransfers.length} Items
                             </span>
                         </div>
 
@@ -227,13 +268,13 @@ export default function ManagerDashboard() {
                                             </div>
                                             <div className="flex gap-2">
                                                 <button
-                                                    onClick={() => setOverrideModal(req)}
+                                                    onClick={() => { setOverrideAction('APPROVE'); setOverrideModal(req); }}
                                                     className="bg-red-600 text-white px-6 py-2 rounded-2xl font-bold text-sm hover:bg-red-700 shadow-lg shadow-red-500/20"
                                                 >
                                                     Approve REMOTELY
                                                 </button>
                                                 <button
-                                                    onClick={() => handleRejectOverride(req.id)}
+                                                    onClick={() => { setOverrideAction('REJECT'); setOverrideModal(req); }}
                                                     className="px-4 py-2 border border-red-200 text-red-600 rounded-2xl font-bold text-sm"
                                                 >
                                                     Reject
@@ -261,6 +302,30 @@ export default function ManagerDashboard() {
                                     ))
                                 )}
                             </div>
+
+                            {/* Pending Cash Transfers */}
+                            {pendingTransfers.length > 0 && (
+                                <div className="space-y-4 pt-6 border-t border-slate-100 dark:border-slate-800">
+                                    <h3 className="text-xs font-black text-primary-600 dark:text-primary-400 uppercase tracking-[0.2em] flex items-center">
+                                        <BanknotesIcon className="h-4 w-4 mr-2" />
+                                        Pending Cash Transfers
+                                    </h3>
+                                    {pendingTransfers.map((tx: any) => (
+                                        <div key={tx.id} className="flex items-center justify-between p-5 bg-primary-50/50 dark:bg-primary-900/10 border border-primary-100 dark:border-primary-900/30 rounded-[2rem]">
+                                            <div>
+                                                <p className="font-black text-slate-900 dark:text-white">{tx.transfer_type.replace(/_/g, ' ')}</p>
+                                                <p className="text-sm text-slate-500">{formatCurrency(tx.amount)} • By {tx.creator_name || 'Staff'}</p>
+                                            </div>
+                                            <button
+                                                onClick={() => setTransferModal(tx)}
+                                                className="px-6 py-2 bg-primary-600 text-white rounded-2xl font-bold text-sm hover:bg-primary-700 shadow-lg shadow-primary-500/20"
+                                            >
+                                                Verify & Accept
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
 
                             {/* User Activations (Maker-Checker) */}
                             {pendingUsers.length > 0 && ['OPS_MANAGER', 'OPS_DIRECTOR', 'SYSTEM_ADMIN', 'BRANCH_MANAGER'].includes(user?.role || '') && (
@@ -300,42 +365,69 @@ export default function ManagerDashboard() {
                     {/* LIQUIDITY MATRIX */}
                     {['OPS_MANAGER', 'OPS_DIRECTOR', 'SYSTEM_ADMIN'].includes(user?.role || '') && (
                         <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden">
-                            <div className="flex items-center gap-3 mb-6">
-                                <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-xl">
-                                    <BanknotesIcon className="h-5 w-5 text-green-600" />
+                            <div className="flex items-center justify-between mb-6">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-xl">
+                                        <BanknotesIcon className="h-5 w-5 text-green-600" />
+                                    </div>
+                                    <h2 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">Liquidity Matrix</h2>
                                 </div>
-                                <h2 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">Liquidity Matrix</h2>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={() => setShowTreasuryModal(true)}
+                                        className="text-xs font-bold bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 shadow shadow-green-500/20"
+                                    >
+                                        Move Funds
+                                    </button>
+                                    <button onClick={fetchAllData} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+                                        <ArrowPathIcon className="h-4 w-4 text-slate-400" />
+                                    </button>
+                                </div>
                             </div>
                             <div className="space-y-6">
                                 <div className="p-8 bg-slate-900 dark:bg-indigo-950 rounded-[2rem] text-white shadow-2xl shadow-indigo-500/10">
-                                    <p className="text-[10px] font-black uppercase text-indigo-300 tracking-widest mb-1">Branch Vault</p>
-                                    <p className="text-4xl font-black tracking-tighter">{formatCurrency(liquidity?.main_vault || 0)}</p>
+                                    <p className="text-[10px] font-black uppercase text-indigo-300 tracking-widest mb-1">Total Liquidity Pool</p>
+                                    <p className="text-4xl font-black tracking-tighter">{formatCurrency(liquidity?.total_liquidity || 0)}</p>
                                 </div>
 
-                                <div className="space-y-4">
-                                    <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center justify-between">
-                                        <span>Teller Drawers</span>
-                                        <button onClick={fetchAllData} className="p-1 hover:bg-slate-100 rounded-full"><ArrowPathIcon className="h-3 w-3" /></button>
-                                    </h4>
-                                    {liquidity?.teller_drawers?.map((drawer: any) => (
-                                        <div key={drawer.teller_id} className={`p-5 rounded-[1.5rem] border transition-all ${drawer.approaching_limit
-                                            ? 'bg-amber-50 border-amber-200 dark:bg-amber-900/10'
-                                            : 'bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-800'
-                                            }`}>
-                                            <div className="flex justify-between items-start">
-                                                <div>
-                                                    <p className="text-xs font-bold text-slate-500">{drawer.counter}</p>
-                                                    <p className="text-xl font-black text-slate-900 dark:text-white">{formatCurrency(drawer.balance)}</p>
-                                                </div>
-                                                {drawer.approaching_limit && (
-                                                    <div className="h-8 w-8 bg-amber-100 rounded-full flex items-center justify-center animate-bounce">
-                                                        <ExclamationTriangleIcon className="h-4 w-4 text-amber-600" />
+                                {liquidity?.categories?.map((category: any) => (
+                                    <div key={category.name} className="space-y-4 pt-4 border-t border-slate-100 dark:border-slate-800/50">
+                                        <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center justify-between">
+                                            <span>{category.name}</span>
+                                            <span className="text-slate-400">{formatCurrency(category.total_balance)}</span>
+                                        </h4>
+                                        <div className="grid gap-3">
+                                            {category.items.map((item: any) => {
+                                                const isOverLimit = item.limit && Number(item.balance) >= Number(item.limit);
+                                                const isWarning = item.limit && Number(item.balance) > (Number(item.limit) * 0.8) && !isOverLimit;
+
+                                                return (
+                                                    <div key={item.name} className={`p-5 rounded-[1.5rem] border transition-all ${isOverLimit ? 'bg-red-50 border-red-200 dark:bg-red-900/10 dark:border-red-900/30'
+                                                        : isWarning ? 'bg-amber-50 border-amber-200 dark:bg-amber-900/10 dark:border-amber-900/30'
+                                                            : 'bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-800'
+                                                        }`}>
+                                                        <div className="flex justify-between items-start">
+                                                            <div>
+                                                                <p className="text-xs font-bold text-slate-500">{item.name} {item.account_number ? `(${item.account_number})` : ''}</p>
+                                                                <p className={`text-xl font-black ${isOverLimit ? 'text-red-700 dark:text-red-400' : 'text-slate-900 dark:text-white'}`}>
+                                                                    {formatCurrency(item.balance)}
+                                                                </p>
+                                                                {item.limit && (
+                                                                    <p className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider font-bold">Limit: {formatCurrency(item.limit)}</p>
+                                                                )}
+                                                            </div>
+                                                            {(isWarning || isOverLimit) && (
+                                                                <div className={`h-8 w-8 rounded-full flex items-center justify-center animate-pulse ${isOverLimit ? 'bg-red-100' : 'bg-amber-100'}`} title="Approaching or exceeding threshold">
+                                                                    <ExclamationTriangleIcon className={`h-4 w-4 ${isOverLimit ? 'text-red-600' : 'text-amber-600'}`} />
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
-                                                )}
-                                            </div>
+                                                )
+                                            })}
                                         </div>
-                                    ))}
-                                </div>
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     )}
@@ -382,7 +474,9 @@ export default function ManagerDashboard() {
                         <div className="h-16 w-16 bg-red-100 rounded-3xl flex items-center justify-center mb-6">
                             <ShieldExclamationIcon className="h-8 w-8 text-red-600" />
                         </div>
-                        <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2">Remote Approval</h3>
+                        <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2 uppercase">
+                            {overrideAction === 'APPROVE' ? 'Remote Approval' : 'Remote Rejection'}
+                        </h3>
                         <p className="text-slate-500 dark:text-slate-400 text-sm mb-8">
                             Unblock <strong>{overrideModal.teller_name}</strong> for transaction of <strong>{formatCurrency(overrideModal.amount)}</strong>.
                         </p>
@@ -396,7 +490,7 @@ export default function ManagerDashboard() {
                         />
                         <div className="flex gap-4">
                             <button onClick={() => { setOverrideModal(null); setManagerPin('') }} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs">Cancel</button>
-                            <button onClick={handleApproveOverride} className="flex-1 bg-red-600 text-white rounded-[1.5rem] font-black py-4 shadow-xl shadow-red-600/20 active:scale-95 transition-all">SIGN & APPROVE</button>
+                            <button onClick={handleOverrideSubmit} className={`flex-1 text-white rounded-[1.5rem] font-black py-4 shadow-xl active:scale-95 transition-all ${overrideAction === 'APPROVE' ? 'bg-indigo-600 shadow-indigo-600/20' : 'bg-red-600 shadow-red-600/20'}`}>SIGN & {overrideAction === 'APPROVE' ? 'APPROVE' : 'REJECT'}</button>
                         </div>
                     </div>
                 </div>
@@ -464,6 +558,43 @@ export default function ManagerDashboard() {
                     }}
                 />
             )}
+
+            {transferModal && (
+                <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl max-w-sm w-full p-10 border border-slate-200 dark:border-slate-800">
+                        <div className="h-16 w-16 bg-primary-100 rounded-3xl flex items-center justify-center mb-6">
+                            <BanknotesIcon className="h-8 w-8 text-primary-600" />
+                        </div>
+                        <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2">Verify Cash Transfer</h3>
+                        <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800 mb-6 border border-slate-100 dark:border-slate-700">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Details</p>
+                            <p className="text-sm font-bold text-slate-900 dark:text-white">{transferModal.transfer_type.replace(/_/g, ' ')}</p>
+                            <p className="text-2xl font-black text-primary-600 mt-1">{formatCurrency(transferModal.amount)}</p>
+                        </div>
+                        <input
+                            type="password"
+                            placeholder="Your PIN"
+                            autoFocus
+                            className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl p-5 text-center text-2xl font-black tracking-[0.5em] mb-6 focus:border-primary-500 transition-all"
+                            value={transferPin}
+                            onChange={e => setTransferPin(e.target.value)}
+                        />
+                        <div className="flex gap-4">
+                            <button onClick={() => handleApproveTransfer(false)} className="flex-1 py-4 font-black text-red-500 uppercase text-xs">Reject</button>
+                            <button onClick={() => handleApproveTransfer(true)} className="flex-1 bg-primary-600 text-white rounded-[1.5rem] font-black py-4 shadow-xl active:scale-95 transition-all">POST LEDGER</button>
+                        </div>
+                        <button onClick={() => { setTransferModal(null); setTransferPin('') }} className="w-full mt-4 text-[10px] font-black text-slate-400 uppercase hover:text-slate-600">Cancel</button>
+                    </div>
+                </div>
+            )}
+
+            <TreasuryTransferModal
+                isOpen={showTreasuryModal}
+                onClose={() => setShowTreasuryModal(false)}
+                onSuccess={() => {
+                    fetchAllData();
+                }}
+            />
         </div>
     )
 }

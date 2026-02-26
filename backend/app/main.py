@@ -36,7 +36,10 @@ from app.routers import (
     teller,
     eod,
     queue,
-    njangi
+    njangi,
+    intercom,
+    kyc,
+    treasury
 )
 
 # Configure logging
@@ -51,10 +54,15 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     from app.scheduler.job_scheduler import scheduler, setup_default_jobs
+    from app.services.risk_scoring import load_models
     
     # Startup
     logger.info("Starting MUNSCCUL Core Banking System...")
     logger.info(f"Environment: {'Development' if settings.DEBUG else 'Production'}")
+    
+    # Load Machine Learning Models into memory (Edge AI)
+    logger.info("Loading offline Edge AI ML models...")
+    load_models()
     
     # Initialize database
     try:
@@ -111,44 +119,19 @@ app = FastAPI(
     - OHADA Accounting Standards
     - OHADA Accounting Standards
     """,
-    docs_url=None,  # Disable default Docs
-    redoc_url=None,  # Disable default ReDoc
     lifespan=lifespan
 )
 
-# Serve static files
-from fastapi.staticfiles import StaticFiles
-from fastapi.openapi.docs import (
-    get_swagger_ui_html,
-    get_swagger_ui_oauth2_redirect_html,
-    get_redoc_html,
-)
 
-app.mount("/static", StaticFiles(directory="/app/app/static"), name="static")
 
-@app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui_html():
-    return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
-        title=app.title + " - Swagger UI",
-        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
-        swagger_js_url="/static/swagger-ui-bundle.js",
-        swagger_css_url="/static/swagger-ui.css",
-    )
+# 0. CORS middleware (Must be first to handle OPTIONS preflight requests)
+cors_config = get_cors_config()
+if settings.DEBUG:
+    cors_config["allow_origins"] = ["*"]
+    cors_config["allow_credentials"] = False # Required for "*"
+app.add_middleware(CORSMiddleware, **cors_config)
 
-@app.get(app.swagger_ui_oauth2_redirect_url, include_in_schema=False)
-async def swagger_ui_redirect():
-    return get_swagger_ui_oauth2_redirect_html()
-
-@app.get("/redoc", include_in_schema=False)
-async def redoc_html():
-    return get_redoc_html(
-        openapi_url=app.openapi_url,
-        title=app.title + " - ReDoc",
-        redoc_js_url="/static/redoc.standalone.js",
-    )
-
-# Security middleware (order matters - first added = first executed)
+# Security middleware (order matters - first added = last executed in some frameworks, but in FastAPI/Starlette, first added = first called on request)
 # 1. Request ID middleware (adds tracing ID)
 app.add_middleware(RequestIDMiddleware)
 
@@ -166,13 +149,6 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 # 6. EOD Lockout middleware (Blocks financial ops during closure)
 app.add_middleware(EODLockoutMiddleware)
-
-# 7. CORS middleware
-cors_config = get_cors_config()
-if settings.DEBUG:
-    cors_config["allow_origins"] = ["*"]
-    cors_config["allow_credentials"] = False # Required for "*"
-app.add_middleware(CORSMiddleware, **cors_config)
 
 
 # Exception handlers
@@ -218,6 +194,9 @@ app.include_router(teller.router, prefix="/api/v1")  # Teller Operations
 app.include_router(eod.router, prefix="/api/v1")  # End of Day Operations
 app.include_router(queue.router, prefix="/api/v1")  # Queue Management System
 app.include_router(njangi.router, prefix="/api/v1")  # Smart Njangi (Tontine)
+app.include_router(intercom.router, prefix="/api/v1")  # Secure Internal Intercom
+app.include_router(kyc.router, prefix="/api/v1")  # KYC OCR Scanner
+app.include_router(treasury.router, prefix="/api/v1")  # Treasury Management
 
 # Health check endpoint
 @app.get("/health", tags=["Health"])
@@ -227,6 +206,7 @@ async def health_check():
         "status": "healthy",
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "reporting_version": "v2.2-DEBUG-MATRIX",
         "timestamp": time.time()
     }
 
@@ -241,23 +221,6 @@ async def root():
         "documentation": "/docs",
         "health": "/health"
     }
-
-# Dedicated WebSocket endpoint for QMS TV Display
-# Placed at root to avoid router prefixing issues
-@app.websocket("/ws/branch/{branch_id}")
-async def websocket_branch_endpoint(websocket: WebSocket, branch_id: int):
-    """
-    Unified WebSocket endpoint for branch-specific alerts (Overrides, Queue, Alerts)
-    """
-    await ws_manager.connect(websocket, branch_id)
-    try:
-        while True:
-            # Keep connection alive and listen for optional pings
-            await websocket.receive_text()
-    except Exception as e:
-        logger.error(f"WS Error in branch {branch_id}: {e}")
-    finally:
-        ws_manager.disconnect(websocket, branch_id)
 
 
 # System info endpoint

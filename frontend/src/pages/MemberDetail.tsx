@@ -15,6 +15,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { membersApi, accountsApi, api } from '../services/api'
 import { formatDate, formatPhone, formatCurrency } from '../utils/formatters'
+import { getErrorMessage } from '../utils/errorUtils'
 import toast from 'react-hot-toast'
 import { useAuthStore } from '../stores/authStore'
 
@@ -125,11 +126,10 @@ export default function MemberDetail() {
       setIsUploadingPhoto(true);
       const formData = new FormData();
       formData.append('file', e.target.files[0]);
-      await membersApi.uploadPhoto(member.id, formData);
       toast.success("Photo uploaded securely");
       fetchMemberDetail();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || "Failed to upload photo");
+      toast.error(getErrorMessage(e, "Failed to upload photo"));
     } finally {
       setIsUploadingPhoto(false);
     }
@@ -141,11 +141,10 @@ export default function MemberDetail() {
       setIsUploadingSignature(true);
       const formData = new FormData();
       formData.append('file', e.target.files[0]);
-      await membersApi.uploadSignature(member.id, formData);
       toast.success("Signature uploaded securely");
       fetchMemberDetail();
     } catch (e: any) {
-      toast.error(e.response?.data?.detail || "Failed to upload signature");
+      toast.error(getErrorMessage(e, "Failed to upload signature"));
     } finally {
       setIsUploadingSignature(false);
     }
@@ -168,8 +167,7 @@ export default function MemberDetail() {
       setAccountForm({ account_type: 'SAVINGS', interest_rate: '0', minimum_balance: '0' })
       fetchMemberDetail() // Refresh to show new account
     } catch (error: any) {
-      const msg = error?.response?.data?.detail
-      toast.error(typeof msg === 'string' ? msg : 'Failed to create account')
+      toast.error(getErrorMessage(error, 'Failed to create account'))
     } finally {
       setIsCreatingAccount(false)
     }
@@ -186,7 +184,7 @@ export default function MemberDetail() {
       setShowEditMember(false)
       fetchMemberDetail()
     } catch (error: any) {
-      toast.error(error?.response?.data?.detail || 'Failed to update member')
+      toast.error(getErrorMessage(error, 'Failed to update member'))
     } finally {
       setIsUpdatingMember(false)
     }

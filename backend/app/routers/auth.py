@@ -17,6 +17,7 @@ from app.auth import (
     get_current_user,
     require_admin,
     require_ops_manager,
+    require_account_approval,
     require_role
 )
 from app.audit import AuditLogger
@@ -171,7 +172,7 @@ async def approve_user(
     request: Request,
     user_id: int,
     approval: schemas.UserApprovalRequest,
-    current_user: models.User = Depends(require_ops_manager),
+    current_user: models.User = Depends(require_account_approval),
     db: Session = Depends(get_db)
 ):
     """

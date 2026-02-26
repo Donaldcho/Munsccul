@@ -48,7 +48,7 @@ export default function TVDisplay() {
 
     const connect = () => {
         // Hardcoded branch_id 1 for now as per the UI
-        const url = queueApi.getWebSocketUrl() + '/1'
+        const url = queueApi.getWebSocketUrl(1)
         ws.current = new WebSocket(url)
 
         ws.current.onopen = () => setConnected(true)

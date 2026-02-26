@@ -17,8 +17,10 @@ export const BlindEODModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =
         coin_500: 0, coin_100: 0, coin_50: 0, coin_25: 0
     });
     const [declaredTotal, setDeclaredTotal] = useState(0);
+    const [momoBalance, setMomoBalance] = useState<number>(0);
+    const [omBalance, setOmBalance] = useState<number>(0);
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [result, setResult] = useState<{ status: string, variance: number } | null>(null);
+    const [result, setResult] = useState<any | null>(null);
 
     if (!isOpen) return null;
 
@@ -29,21 +31,20 @@ export const BlindEODModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =
     };
 
     const handleSubmit = async () => {
-        if (declaredTotal === 0) {
-            toast.error('Please count your drawer first.');
+        if (declaredTotal === 0 && momoBalance === 0 && omBalance === 0) {
+            toast.error('Please declare your balances.');
             return;
         }
 
         setIsSubmitting(true);
         try {
             const response = await api.post('/teller/blind-eod', {
-                denominations: denominations
+                denominations: denominations,
+                momo_balance: momoBalance,
+                om_balance: omBalance
             });
 
-            setResult({
-                status: response.data.status,
-                variance: response.data.variance_amount
-            });
+            setResult(response.data);
 
             toast.success('End of Day Reconciliation Submitted.');
 
@@ -54,7 +55,9 @@ export const BlindEODModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =
                 // Reset state for next time
                 setResult(null);
                 setDeclaredTotal(0);
-            }, 3000);
+                setMomoBalance(0);
+                setOmBalance(0);
+            }, 5000);
 
         } catch (error) {
             toast.error('Failed to submit EOD reconciliation.');
@@ -75,7 +78,7 @@ export const BlindEODModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =
                         </div>
                         <h2 className="text-2xl font-bold text-white">Blind EOD Balancing</h2>
                         <p className="text-blue-200 mt-2 text-sm">
-                            Count your physical drawer cash. The system will independently verify the totals.
+                            Declare your physical cash and digital float. The system will independently verify the totals.
                         </p>
                     </div>
 
@@ -90,28 +93,40 @@ export const BlindEODModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =
 
                     <div className="p-8">
                         {result ? (
-                            <div className="text-center py-6">
+                            <div className="text-center py-4">
                                 {result.status === 'BALANCED' ? (
                                     <>
                                         <CheckCircleIcon className="w-20 h-20 text-green-500 mx-auto mb-4" />
                                         <h3 className="text-2xl font-bold text-gray-900 mb-2">Perfectly Balanced</h3>
-                                        <p className="text-gray-500">Your physical cash matches the system exactly. Great job.</p>
+                                        <p className="text-gray-500">All local and digital balances match the system exactly. Great job.</p>
                                     </>
                                 ) : (
                                     <>
                                         <ExclamationTriangleIcon className="w-20 h-20 text-orange-500 mx-auto mb-4" />
                                         <h3 className="text-2xl font-bold text-gray-900 mb-2">Variance Detected</h3>
-                                        <p className="text-gray-500 mb-4">A variance of {result.variance.toLocaleString()} FCFA was found and logged for manager review.</p>
+                                        <div className="space-y-2 mb-6">
+                                            {result.variance_amount !== 0 && (
+                                                <p className="text-gray-700">Cash Variance: <span className="font-bold text-red-600">{result.variance_amount.toLocaleString()} FCFA</span></p>
+                                            )}
+                                            {result.momo_variance !== 0 && (
+                                                <p className="text-gray-700">MoMo Variance: <span className="font-bold text-red-600">{result.momo_variance.toLocaleString()} FCFA</span></p>
+                                            )}
+                                            {result.om_variance !== 0 && (
+                                                <p className="text-gray-700">Orange Var: <span className="font-bold text-red-600">{result.om_variance.toLocaleString()} FCFA</span></p>
+                                            )}
+                                        </div>
+                                        <p className="text-gray-500 mb-4">Variances have been logged for manager review.</p>
                                         <p className="text-sm text-gray-400">Do not make manual adjustments. A manager will verify.</p>
                                     </>
                                 )}
                             </div>
                         ) : (
-                            <div className="space-y-8">
+                            <div className="space-y-6">
+                                {/* CASH SECTION */}
                                 <div className="bg-gray-50 rounded-xl p-6 border-2 border-dashed border-gray-300 text-center">
-                                    <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-2">Declared Physical Total</h3>
-                                    <div className="text-5xl font-black text-gray-900 tracking-tight mb-4">
-                                        {declaredTotal.toLocaleString()} <span className="text-2xl text-gray-400 font-bold tracking-normal">FCFA</span>
+                                    <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Declared Physical Total</h3>
+                                    <div className="text-4xl font-black text-gray-900 tracking-tight mb-4">
+                                        {declaredTotal.toLocaleString()} <span className="text-xl text-gray-400 font-bold tracking-normal">FCFA</span>
                                     </div>
                                     <button
                                         onClick={() => setShowCalculator(true)}
@@ -121,7 +136,31 @@ export const BlindEODModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =
                                     </button>
                                 </div>
 
-                                <div className="flex space-x-4">
+                                {/* DIGITAL FLOAT SECTION */}
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest">MTN MoMo Balance</label>
+                                        <input
+                                            type="number"
+                                            value={momoBalance || ''}
+                                            onChange={(e) => setMomoBalance(Number(e.target.value))}
+                                            placeholder="MTN Float"
+                                            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest">Orange Money</label>
+                                        <input
+                                            type="number"
+                                            value={omBalance || ''}
+                                            onChange={(e) => setOmBalance(Number(e.target.value))}
+                                            placeholder="Orange Float"
+                                            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:ring-2 focus:ring-blue-500 outline-none"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex space-x-4 pt-4">
                                     <button
                                         onClick={onClose}
                                         disabled={isSubmitting}
@@ -131,7 +170,7 @@ export const BlindEODModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =
                                     </button>
                                     <button
                                         onClick={handleSubmit}
-                                        disabled={isSubmitting || declaredTotal === 0}
+                                        disabled={isSubmitting || (declaredTotal === 0 && momoBalance === 0 && omBalance === 0)}
                                         className="flex-1 px-4 py-3 bg-blue-900 text-white font-medium rounded-lg hover:bg-blue-800 focus:ring-4 focus:ring-blue-900/30 disabled:opacity-50 disabled:bg-blue-300 transition-all shadow-lg shadow-blue-900/20"
                                     >
                                         {isSubmitting ? 'Sumitting...' : 'Submit Final Count'}

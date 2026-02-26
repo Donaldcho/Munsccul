@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 import asyncio
 import json
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -19,6 +20,8 @@ from app.database import SessionLocal
 from app import models
 from app.events.event_bus import publish_event, EventType
 
+logger = logging.getLogger(__name__)
+
 
 class JobType(str, Enum):
     """Types of scheduled jobs"""
@@ -28,6 +31,7 @@ class JobType(str, Enum):
     FEE_APPLICATION = "FEE_APPLICATION"
     STANDING_INSTRUCTION = "STANDING_INSTRUCTION"
     REPORT_GENERATION = "REPORT_GENERATION"
+    RISK_SCORING = "RISK_SCORING"
     DATA_BACKUP = "DATA_BACKUP"
     AUDIT_LOG_ARCHIVE = "AUDIT_LOG_ARCHIVE"
     CUSTOM = "CUSTOM"
@@ -250,6 +254,77 @@ class StandingInstructionJob(JobExecutor):
                 message=f"Standing instruction job failed: {str(e)}"
             )
 
+class RiskScoringJob(JobExecutor):
+    """Nightly XGBoost ML Tabular inference to evaluate default risk"""
+    
+    async def execute(self, params: Dict[str, Any], db: Session) -> JobResult:
+        from app.services.risk_scoring import evaluate_member_risk
+        from decimal import Decimal
+        try:
+            memberships = db.query(models.NjangiMembership).all()
+            evaluated = 0
+            
+            for m in memberships:
+                # Mock parameters extraction. In production, these come dynamically.
+                age = 35 # Derived from member DOB
+                cycle_size = float(m.contribution_amount) * 12 # Simulated cycle size
+                days_late = 5 if m.status == models.UserStatus.SUSPENDED else 0
+                frequency = 4 # Weekly
+                
+                # Inference Edge AI
+                default_prob = evaluate_member_risk(age, cycle_size, days_late, frequency)
+                
+                # Convert ML probability (0 to 1) to a Trust Score (0 to 100). Lower default = higher trust
+                new_trust = 100.0 * (1.0 - default_prob)
+                m.trust_score = Decimal(str(round(new_trust, 2)))
+                evaluated += 1
+                
+                if default_prob > 0.8:
+                    # Very high risk -> publish alert
+                    await publish_event(
+                        event_type=EventType.FRAUD_ALERT_TRIGGERED,
+                        entity_type="NjangiRisk",
+                        entity_id=str(m.id),
+                        payload={"member_id": m.member_id, "default_probability": default_prob, "trust_score": float(m.trust_score)},
+                        db=db
+                    )
+                    
+                    # WORM-compliant Intercom Notification to branch
+                    try:
+                        from app.models import IntercomMessage, IntercomEntityType
+                        from app.schemas import IntercomMessageOut
+                        from app.websocket_manager import ws_manager
+                        
+                        system_user_id = 1
+                        alert_msg = f"🚨 AI RISK ALERT: Njangi Member {m.member.first_name} {m.member.last_name} has a {default_prob*100:.1f}% probability of default. Trust Score dropped to {m.trust_score}."
+                        
+                        db_msg = IntercomMessage(
+                            sender_id=system_user_id,
+                            receiver_id=None,  # Broadcast
+                            content=alert_msg,
+                            attached_entity_type=IntercomEntityType.MEMBER,
+                            attached_entity_id=str(m.member_id)
+                        )
+                        db.add(db_msg)
+                        db.commit()
+                        db.refresh(db_msg)
+                        
+                        out_msg = IntercomMessageOut.from_orm(db_msg)
+                        await ws_manager.publish_message(out_msg)
+                        logger.info(f"Broadcasted Intercom Risk Alert for Member {m.member_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to dispatch Risk Intercom message: {e}")
+                    
+            db.commit()
+            return JobResult(
+                success=True,
+                message=f"Evaluated risk for {evaluated} Njangi memberships using XGBoost",
+                details={"evaluated_count": evaluated}
+            )
+            
+        except Exception as e:
+            return JobResult(success=False, message=f"Risk scoring job failed: {str(e)}")
+
 
 class SchedulerService:
     """
@@ -273,6 +348,7 @@ class SchedulerService:
             JobType.INTEREST_POSTING: InterestPostingJob(),
             JobType.LOAN_OVERDUE_CHECK: LoanOverdueCheckJob(),
             JobType.STANDING_INSTRUCTION: StandingInstructionJob(),
+            JobType.RISK_SCORING: RiskScoringJob(),
         }
         self._initialized = True
     
@@ -446,6 +522,12 @@ def setup_default_jobs():
     scheduler.schedule_recurring_job(
         job_type=JobType.STANDING_INSTRUCTION,
         cron_expression="0 8 * * *",  # 8 AM daily
+    )
+    
+    # ML Risk Scoring at 2 AM
+    scheduler.schedule_recurring_job(
+        job_type=JobType.RISK_SCORING,
+        cron_expression="0 2 * * *",  # 2 AM daily
     )
     
     print("Default jobs scheduled")

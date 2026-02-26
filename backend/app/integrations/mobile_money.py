@@ -10,6 +10,8 @@ import json
 import hmac
 import hashlib
 from sqlalchemy.orm import Session
+import asyncio
+import time
 
 from app import models
 from app.config import settings
@@ -110,6 +112,33 @@ class MTNMoMoProvider(MobileMoneyProviderBase):
         # Format phone number (remove country code if present)
         phone = phone_number.replace("+237", "").replace("237", "")
         
+        # MOCK BYPASS: Check if we are using an empty or default 'mock' API key
+        if not self.config.api_key or any(k in self.config.api_key.lower() for k in ["mock", "test", "your_api_key"]):
+            async def mock_callback():
+                await asyncio.sleep(2)
+                try:
+                    async with aiohttp.ClientSession() as cb_session:
+                        callback_url = "http://localhost:8000/api/v1/mobile-money/callback/MTN_MOMO"
+                        payload = {
+                            "amount": str(amount),
+                            "currency": "XAF",
+                            "externalId": reference,
+                            "payer": {"partyIdType": "MSISDN", "partyId": phone},
+                            "status": "SUCCESSFUL",
+                            "financialTransactionId": f"MOMO{int(time.time())}"
+                        }
+                        await cb_session.post(callback_url, json=payload)
+                except Exception as e:
+                    print(f"Mock callback failed: {e}")
+            
+            asyncio.create_task(mock_callback())
+            return {
+                "success": True,
+                "reference": reference,
+                "status": "PENDING",
+                "message": "Mock Collection request initiated"
+            }
+        
         payload = {
             "amount": str(amount),
             "currency": "XAF",
@@ -164,6 +193,33 @@ class MTNMoMoProvider(MobileMoneyProviderBase):
         session = await self._get_session()
         
         phone = phone_number.replace("+237", "").replace("237", "")
+        
+        # MOCK BYPASS
+        if not self.config.api_key or any(k in self.config.api_key.lower() for k in ["mock", "test", "your_api_key"]):
+            async def mock_callback_disb():
+                await asyncio.sleep(2)
+                try:
+                    async with aiohttp.ClientSession() as cb_session:
+                        callback_url = "http://localhost:8000/api/v1/mobile-money/callback/MTN_MOMO"
+                        payload = {
+                            "amount": str(amount),
+                            "currency": "XAF",
+                            "externalId": reference,
+                            "payee": {"partyIdType": "MSISDN", "partyId": phone},
+                            "status": "SUCCESSFUL",
+                            "financialTransactionId": f"MOMO{int(time.time())}"
+                        }
+                        await cb_session.post(callback_url, json=payload)
+                except Exception as e:
+                    print(f"Mock callback failed: {e}")
+            
+            asyncio.create_task(mock_callback_disb())
+            return {
+                "success": True,
+                "reference": reference,
+                "status": "PENDING",
+                "message": "Mock Disbursement request initiated"
+            }
         
         payload = {
             "amount": str(amount),
@@ -256,10 +312,33 @@ class OrangeMoneyProvider(MobileMoneyProviderBase):
         description: str = ""
     ) -> Dict[str, Any]:
         """Orange Money collection request"""
+        # MOCK BYPASS
+        if not self.config.api_key or any(k in self.config.api_key.lower() for k in ["mock", "test", "your_api_key"]):
+            async def mock_callback_orange():
+                await asyncio.sleep(2)
+                try:
+                    async with aiohttp.ClientSession() as cb_session:
+                        callback_url = "http://localhost:8000/api/v1/mobile-money/callback/ORANGE_MONEY"
+                        payload = {
+                            "amount": str(amount),
+                            "currency": "XAF",
+                            "externalId": reference,
+                            "status": "SUCCESSFUL",
+                            "transactionId": f"OM{int(time.time())}"
+                        }
+                        await cb_session.post(callback_url, json=payload)
+                except Exception as e:
+                    print(f"Mock callback failed: {e}")
+            
+            asyncio.create_task(mock_callback_orange())
+            return {
+                "success": True,
+                "reference": reference,
+                "status": "PENDING",
+                "message": "Mock Collection request initiated (Orange)"
+            }
+
         session = await self._get_session()
-        
-        # Orange Money API implementation
-        # This is a placeholder - actual implementation depends on Orange's API
         
         payload = {
             "customer_msisdn": phone_number,
@@ -290,13 +369,33 @@ class OrangeMoneyProvider(MobileMoneyProviderBase):
         description: str = ""
     ) -> Dict[str, Any]:
         """Orange Money disbursement"""
+        # MOCK BYPASS
+        if self.config.api_key and any(k in self.config.api_key.lower() for k in ["mock", "test", "your_api_key"]):
+            async def mock_callback_orange_disb():
+                await asyncio.sleep(2)
+                try:
+                    async with aiohttp.ClientSession() as cb_session:
+                        callback_url = "http://localhost:8000/api/v1/mobile-money/callback/ORANGE_MONEY"
+                        payload = {
+                            "amount": str(amount),
+                            "currency": "XAF",
+                            "externalId": reference,
+                            "status": "SUCCESSFUL",
+                            "transactionId": f"OMD{int(time.time())}"
+                        }
+                        await cb_session.post(callback_url, json=payload)
+                except Exception as e:
+                    print(f"Mock callback failed: {e}")
+            
+            asyncio.create_task(mock_callback_orange_disb())
+            return {
+                "success": True,
+                "reference": reference,
+                "status": "PENDING",
+                "message": "Mock Disbursement initiated (Orange Money)"
+            }
+
         # Implementation would go here
-        return {
-            "success": True,
-            "reference": reference,
-            "status": "PENDING",
-            "message": "Disbursement initiated (Orange Money)"
-        }
     
     async def check_transaction_status(
         self,
@@ -368,6 +467,9 @@ class MobileMoneyService:
             models.MobileMoneyConfig.provider == provider
         ).first()
         
+        if not config:
+            raise MobileMoneyError(f"Provider {provider.value} not configured")
+            
         if not config.collection_enabled:
             raise MobileMoneyError("Collection not enabled for this provider")
         
@@ -448,6 +550,9 @@ class MobileMoneyService:
             models.MobileMoneyConfig.provider == provider
         ).first()
         
+        if not config:
+            raise MobileMoneyError(f"Provider {provider.value} not configured")
+            
         if not config.disbursement_enabled:
             raise MobileMoneyError("Disbursement not enabled for this provider")
         
@@ -534,8 +639,54 @@ class MobileMoneyService:
             mm_transaction.status = "COMPLETED"
             mm_transaction.completed_at = datetime.utcnow()
             
-            # Create internal transaction
-            # This would call the transaction service
+            # Create internal transaction natively mapping into OHADA ledger
+            account = self.db.query(models.Account).filter(models.Account.id == mm_transaction.account_id).first()
+            if account:
+                from app.services.accounting import AccountingService
+                import uuid
+                
+                # Mock transaction Ref generator since we don't have current_user here
+                txn_ref = f"TXN-{datetime.utcnow().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+
+                if mm_transaction.transaction_type == "DEPOSIT":
+                    new_balance = account.balance + mm_transaction.amount
+                    tx_type = models.TransactionType.DEPOSIT
+                    debit_code = "1020" # generically mapping 1020 to MoMo suspense GL
+                    credit_code = "2010"
+                else:
+                    new_balance = account.balance - mm_transaction.amount
+                    tx_type = models.TransactionType.WITHDRAWAL
+                    debit_code = "2010"
+                    credit_code = "1020"
+
+                core_tx = models.Transaction(
+                    transaction_ref=txn_ref,
+                    account_id=account.id,
+                    transaction_type=tx_type,
+                    amount=mm_transaction.amount,
+                    currency="XAF",
+                    debit_account=debit_code,
+                    credit_account=credit_code,
+                    balance_after=new_balance,
+                    description=f"Mobile Money ({provider.value}) {'Deposit' if tx_type == models.TransactionType.DEPOSIT else 'Withdrawal'}",
+                    payment_channel=models.PaymentChannel(provider.value),
+                    external_reference=mm_transaction.external_reference,
+                    created_at=datetime.utcnow()
+                )
+                self.db.add(core_tx)
+                account.balance = new_balance
+                account.available_balance = new_balance
+                
+                AccountingService.record_transaction(
+                    db=self.db,
+                    transaction_id=core_tx.transaction_ref,
+                    transaction_type=tx_type.value,
+                    amount=mm_transaction.amount,
+                    description=core_tx.description,
+                    created_by=None,
+                    debit_gl_code=debit_code,
+                    credit_gl_code=credit_code
+                )
             
         elif status.upper() in ["FAILED", "REJECTED"]:
             mm_transaction.status = "FAILED"

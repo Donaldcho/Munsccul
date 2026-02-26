@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     ca-certificates \
     curl \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-fra \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set work directory
@@ -21,6 +25,9 @@ WORKDIR /app
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Download local SpaCy models (so they are baked into the image)
+RUN pip install --no-cache-dir https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1.tar.gz
 
 # Copy application code
 COPY app/ ./app/

@@ -104,7 +104,8 @@ def require_role(allowed_roles: list):
 
 
 # Role-based dependencies
-require_ops_manager = require_role(["OPS_MANAGER", "SYSTEM_ADMIN"])
+require_ops_manager = require_role(["OPS_MANAGER", "BRANCH_MANAGER", "OPS_DIRECTOR"])
+require_account_approval = require_role(["OPS_MANAGER", "OPS_DIRECTOR"]) # Strict: Admin creates, Ops approves
 require_admin = require_role(["SYSTEM_ADMIN"])
 require_manager = require_role(["BRANCH_MANAGER", "OPS_MANAGER"])
 require_teller = require_role(["TELLER", "BRANCH_MANAGER", "OPS_MANAGER"])

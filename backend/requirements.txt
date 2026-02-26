@@ -63,3 +63,11 @@ aiohttp==3.9.1
 
 # Date utilities
 python-dateutil==2.8.2
+
+# Edge AI & Machine Learning
+xgboost==2.0.2
+scikit-learn==1.3.2
+joblib==1.3.2
+pytesseract==0.3.10
+spacy==3.7.2
+Pillow==10.1.0

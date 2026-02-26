@@ -1,5 +1,6 @@
 import axios from 'axios'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '../utils/errorUtils'
 
 // API base URL
 const API_URL = import.meta.env.VITE_API_URL || '/api/v1'
@@ -55,14 +56,7 @@ api.interceptors.response.use(
           break
 
         case 422:
-          const detail = data?.detail
-          let message = 'Validation error. Please check your input.'
-          if (typeof detail === 'string') {
-            message = detail
-          } else if (Array.isArray(detail)) {
-            message = detail.map((err: any) => err.msg).join(', ')
-          }
-          toast.error(message)
+          toast.error(getErrorMessage(error, 'Validation error. Please check your input.'))
           break
 
         case 500:
@@ -94,9 +88,7 @@ api.interceptors.response.use(
             )
           } else {
             // Standard error message
-            toast.error(
-              typeof errorDetail === 'string' ? errorDetail : 'An error occurred. Please try again.'
-            )
+            toast.error(getErrorMessage(error))
           }
       }
     } else if (error.request) {
@@ -112,6 +104,7 @@ api.interceptors.response.use(
 export const membersApi = {
   getAll: (params?: any) => api.get('/members', { params }),
   getById: (id: string | number) => api.get(`/members/${id}`),
+  getByAccountId: (accountId: string | number) => api.get(`/members/by-account/${accountId}`),
   create: (data: any) => api.post('/members', data),
   update: (id: string | number, data: any) => api.put(`/members/${id}`, data),
   search: (query: string) => api.get('/members', { params: { search: query } }),
@@ -120,6 +113,17 @@ export const membersApi = {
   uploadSignature: (id: string | number, formData: FormData) =>
     api.post(`/members/${id}/upload-signature`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
 }
+export const kycApi = {
+  uploadDocument: (formData: FormData) =>
+    api.post('/kyc/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+}
+
+export const mobileMoneyApi = {
+  getProviders: () => api.get('/mobile-money/providers'),
+  collect: (params: any) => api.post('/mobile-money/collect', null, { params }),
+  disburse: (params: any) => api.post('/mobile-money/disburse', null, { params }),
+  getTransactions: (params?: any) => api.get('/mobile-money/transactions', { params }),
+}
 
 export const accountsApi = {
   getAll: (params?: any) => api.get('/accounts', { params }),
@@ -127,6 +131,7 @@ export const accountsApi = {
   create: (data: any) => api.post('/accounts', data),
   getBalance: (id: string | number) => api.get(`/accounts/${id}/balance`),
   getStatement: (id: string | number, params?: any) => api.get(`/accounts/${id}/statement`, { params }),
+  getByNumber: (number: string) => api.get(`/accounts/by-number/${number}`),
 }
 
 export const transactionsApi = {
@@ -180,17 +185,17 @@ export const eodApi = {
 
 export const opsApi = {
   getOverrideRequests: (params?: any) => api.get('/transactions/overrides/pending', { params }),
-  approveOverride: (id: number, data: { manager_pin: string }) => api.post(`/transactions/overrides/${id}/approve`, data),
-  rejectOverride: (id: number) => api.post(`/transactions/overrides/${id}/reject`),
+  approveOverride: (id: number, data: { manager_pin: string }) => api.post(`/transactions/overrides/${id}/approve`, { override_id: id, ...data }),
+  rejectOverride: (id: number, data: { manager_pin: string, comments?: string }) => api.post(`/transactions/overrides/${id}/reject`, { override_id: id, ...data }),
   getLiquidity: (branchId: number) => api.get(`/branches/${branchId}/stats/liquidity`),
   getAmlFlags: (params?: any) => api.get('/reports/audit-logs', { params: { ...params, category: 'AML' } }),
   getEodLockStatus: (params?: any) => api.get('/eod/status', { params }),
   vaultDropByManager: (data: any) => api.post('/branches/vault-drop', data),
-  /** Backend endpoint: GET /ws/branch/{branch_id} — no auth; use this URL only. */
+  /** Backend endpoint: GET /api/v1/branches/ws/{branch_id} — no auth. */
   getOpsInboxWebSocketUrl: (branchId: number) => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    return `${protocol}//${host}/ws/branch/${branchId}`;
+    return `${protocol}//${host}/api/v1/branches/ws/${branchId}`;
   },
 }
 
@@ -226,10 +231,33 @@ export const queueApi = {
   noShow: (id: number) => api.post(`/queue/${id}/no-show`),
   recall: (id: number) => api.post(`/queue/${id}/recall`),
   getStats: () => api.get('/queue/stats'),
-  getWebSocketUrl: () => {
+  getWebSocketUrl: (branchId: number = 1) => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const path = "/ws/branch";
-    return protocol + "//" + host + path;
+    return `${protocol}//${host}/api/v1/branches/ws/${branchId}`;
   },
+}
+
+export const intercomApi = {
+  getHistory: (userId: number, limit = 50) => api.get(`/intercom/history/${userId}?limit=${limit}`),
+  send: (data: { content: string; receiver_id?: number | null; attached_entity_type?: string | null; attached_entity_id?: string | null }) => api.post(`/intercom/send?current_user_id=${JSON.parse(localStorage.getItem('camccul-auth') || '{}').state?.user?.id || 0}`, data),
+  getWebSocketUrl: (userId: number) => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const host = window.location.host;
+    return `${protocol}//${host}/api/v1/intercom/ws/${userId}`;
+  }
+}
+
+export const tellerApi = {
+  verifyPin: (data: { pin: string }) => api.post('/teller/verify-pin', data),
+  getBalance: () => api.get('/teller/balance'),
+  vaultDrop: (data: { amount: number }) => api.post('/teller/vault-drop', data),
+}
+export const treasuryApi = {
+  getAccounts: () => api.get('/treasury/accounts'),
+  getPendingTransfers: () => api.get('/treasury/transfers/pending'),
+  approveTransfer: (id: number, data: { approved: boolean, manager_pin: string }) => api.post(`/treasury/transfer/${id}/approve`, data),
+  requestTransfer: (data: { amount: number, transfer_type: string, description?: string, source_treasury_id?: number | null, destination_treasury_id?: number | null }) => api.post('/treasury/transfer/request', data),
+  vaultAdjustment: (data: { amount: number, description: string }) => api.post('/treasury/vault-adjustment', data),
+  externalBankDeposit: (data: { amount: number, transfer_type: string, description?: string }) => api.post('/treasury/external-bank-deposit', data),
 }

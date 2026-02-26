@@ -122,7 +122,8 @@ def create_double_entry_transaction(
         external_reference=external_reference,
         comments=comments,
         created_by=created_by,
-        created_at=datetime.utcnow()
+        created_at=datetime.utcnow(),
+        branch_origin_id=db.query(models.User.branch_id).filter(models.User.id == created_by).scalar()
     )
     
     db.add(transaction)
@@ -199,6 +200,11 @@ async def deposit(
         purpose=deposit_data.purpose,
         external_reference=deposit_data.external_reference,
         comments=deposit_data.comments
+    )
+    
+    # Check if approval required (Four-Eyes Principle)
+    requires_approval = check_four_eyes_principle(
+        db, float(deposit_data.amount), current_user.id
     )
     
     if requires_approval:
@@ -972,17 +978,20 @@ async def get_daily_cash_position(
     
     deposits = db.query(func.sum(models.Transaction.amount)).filter(
         models.Transaction.transaction_type == models.TransactionType.DEPOSIT,
+        models.Transaction.branch_origin_id == branch_id,
         models.Transaction.created_at >= start_of_day,
         models.Transaction.created_at <= end_of_day
     ).scalar() or Decimal("0")
     
     withdrawals = db.query(func.sum(models.Transaction.amount)).filter(
         models.Transaction.transaction_type == models.TransactionType.WITHDRAWAL,
+        models.Transaction.branch_origin_id == branch_id,
         models.Transaction.created_at >= start_of_day,
         models.Transaction.created_at <= end_of_day
     ).scalar() or Decimal("0")
     
     transaction_count = db.query(models.Transaction).filter(
+        models.Transaction.branch_origin_id == branch_id,
         models.Transaction.created_at >= start_of_day,
         models.Transaction.created_at <= end_of_day
     ).count()

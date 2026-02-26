@@ -5,6 +5,9 @@ from sqlalchemy import func, case, and_
 
 from app import models
 
+import logging
+logger = logging.getLogger(__name__)
+
 class ReportingService:
     """
     Financial & Regulatory Reporting Engine (COBAC Compliant)
@@ -56,12 +59,13 @@ class ReportingService:
             debit = float(row.total_debit or 0)
             credit = float(row.total_credit or 0)
             
-            # Closing Balance calculation (Opening + Movement)
-            # Net signed balance ensures total sum is zero
+            # Closing Balance: Opening (signed) + today's Debit - today's Credit
             closing = opening + debit - credit
 
             # Only include accounts with activity or a balance
             if opening != 0 or debit != 0 or credit != 0:
+                # balance_type tells consumers whether this account has a net DEBIT or CREDIT balance
+                balance_type = "DEBIT" if closing >= 0 else "CREDIT"
                 trial_balance.append({
                     "account_code": row.account_code,
                     "account_name": row.account_name,
@@ -69,10 +73,29 @@ class ReportingService:
                     "opening_balance": opening,
                     "debit": debit,
                     "credit": credit,
-                    "closing_balance": closing
+                    "closing_balance": closing,
+                    # These fields are required by generate_balance_sheet & net income calc:
+                    "balance": abs(closing),
+                    "balance_type": balance_type
                 })
 
-        return trial_balance
+        # Compute totals row (a valid trial balance has total_debit == total_credit)
+        total_opening = sum(r["opening_balance"] for r in trial_balance)
+        total_debit = sum(r["debit"] for r in trial_balance)
+        total_credit = sum(r["credit"] for r in trial_balance)
+        net_balance = total_opening + total_debit - total_credit  # Should be 0 if balanced
+
+        return {
+            "as_of_date": as_of_date.isoformat(),
+            "rows": trial_balance,
+            "totals": {
+                "opening_balance": round(total_opening, 2),
+                "debit": round(total_debit, 2),
+                "credit": round(total_credit, 2),
+                "net_balance": round(net_balance, 2),
+                "is_balanced": abs(net_balance) < 0.01
+            }
+        }
 
     @staticmethod
     def generate_balance_sheet(db: Session, as_of_date: date) -> Dict[str, Any]:
@@ -80,7 +103,9 @@ class ReportingService:
         Generates the Balance Sheet (Bilan).
         Assets = Liabilities + Equity
         """
-        tb = ReportingService.generate_trial_balance(db, as_of_date)
+        tb_result = ReportingService.generate_trial_balance(db, as_of_date)
+        # generate_trial_balance now returns a dict with 'rows' and 'totals'
+        tb = tb_result["rows"]
         
         assets = []
         liabilities = []
@@ -282,7 +307,6 @@ class ReportingService:
         ).all()
 
         # 2. Calculate Brought Forward (B/F) Balances per channel
-        # We look at all transactions before today
         bf_query = db.query(
             models.Transaction.payment_channel,
             func.sum(
@@ -296,7 +320,7 @@ class ReportingService:
                     (models.Transaction.transaction_type.in_([
                         models.TransactionType.WITHDRAWAL,
                         models.TransactionType.LOAN_DISBURSEMENT,
-                        models.TransactionType.TRANSFER # Transfers from source
+                        models.TransactionType.TRANSFER
                     ]), -models.Transaction.amount),
                     else_=0
                 )
@@ -325,73 +349,176 @@ class ReportingService:
             elif channel == models.PaymentChannel.MTN_MOMO: bf_row["mobile_mtn"] += amount
             bf_row["total"] += amount
 
-        # 3. Define Sections
+        # Helper to map TreasuryAccount to cash flow column
+        def map_treasury_to_col(treasury_account):
+            if not treasury_account: return "cash"
+            if treasury_account.account_type == models.TreasuryAccountType.VAULT: return "cash"
+            if treasury_account.account_type == models.TreasuryAccountType.BANK: return "corp_banks"
+            if treasury_account.account_type == models.TreasuryAccountType.CREDIT_UNION: return "mf_balico"
+            if treasury_account.account_type == models.TreasuryAccountType.MOBILE_MONEY:
+                return "mobile_om" if "orange" in (treasury_account.name or "").lower() else "mobile_mtn"
+            return "cash"
+
+        # 2b. Add Brought Forward Balances from internal Treasury Transfers (VaultTransfers)
+        bf_transfers = db.query(models.VaultTransfer).filter(
+            models.VaultTransfer.status == models.VaultTransferStatus.APPROVED,
+            models.VaultTransfer.approved_at < start_of_day
+        ).all()
+        
+        # Pre-cache TreasuryAccounts to avoid N+1 queries in loops
+        all_treasuries = {t.id: t for t in db.query(models.TreasuryAccount).all()}
+        
+        for transfer in bf_transfers:
+            amount = float(transfer.amount)
+            src_acc = all_treasuries.get(transfer.source_treasury_id) if transfer.source_treasury_id else None
+            dst_acc = all_treasuries.get(transfer.destination_treasury_id) if transfer.destination_treasury_id else None
+            
+            src_col = map_treasury_to_col(src_acc) if transfer.source_treasury_id else "cash"
+            dst_col = map_treasury_to_col(dst_acc) if transfer.destination_treasury_id else "cash"
+            
+            # Decrement source, increment destination
+            bf_row[src_col] -= amount
+            bf_row[dst_col] += amount
+            # bf_row["total"] remains unchanged because it's an internal transfer
+
+        # 3. Define Sections with sub-categories
         sections = {
             "INFLOWS": [],
-            "EXPENSES": [],
-            "PROJECTED_EXPENSES": []
+            "EXPENSES_A": [],
+            "EXPENSES_B": [],
+            "PROJECTED_A": [],
+            "PROJECTED_B": [],
+            "PROJECTED_C": []
         }
 
-        # Purpose groups (case-insensitive for robustness)
-        inflow_purposes = ["SAVINGS", "DEPOSIT", "CURRENT_ACT", "SHARE_CAPITAL", "ENTRANCE_FEES", 
-                          "SOLIDARITY_FUND", "BUILDING_CONTRIBUTION", "LOAN_REPAYMENT", 
-                          "PREFERENCE_SHARES", "LOAN_PROCESSING_FEES", "CASH_FROM_BALICOP"]
-        expense_purposes = ["PAYMENT_OF_A_SUPPLIER", "CASH_EXPENSES", "CLIENT_EXPENSES"]
-        projected_purposes = ["SALARIES", "LOANS", "TAXATION_AND_CNPS"]
+        # Purpose mapping (Standardized)
+        purpose_map = {
+            # Inflows
+            "CASH FROM BALICOP": "INFLOWS",
+            "SAVINGS": "INFLOWS",
+            "CURRENT ACT": "INFLOWS",
+            "SHARE CAPITAL": "INFLOWS",
+            "ENTRANCE FEES": "INFLOWS",
+            "SOLIDARITY FUND": "INFLOWS",
+            "BUILDING CONTRIBUTION": "INFLOWS",
+            "LOAN REPAYMENT": "INFLOWS",
+            "PREFERENCE SHARES": "INFLOWS",
+            "LOAN PROCESSING FEES": "INFLOWS",
+            
+            # Expenses
+            "PAYMENT OF A SUPPLIER": "EXPENSES_A",
+            "CASH EXPENSES": "EXPENSES_A",
+            "EXPENSES CLIENT": "EXPENSES_B",
+            
+            # Projected
+            "SALARIES": "PROJECTED_A",
+            "LOANS": "PROJECTED_B",
+            "TAXATION AND CNPS": "PROJECTED_C"
+        }
+
+        INFLOW_TYPES = {
+            models.TransactionType.DEPOSIT,
+            models.TransactionType.LOAN_REPAYMENT,
+            models.TransactionType.FEE,
+            models.TransactionType.INTEREST,
+            models.TransactionType.NJANGI_CONTRIBUTION,
+        }
+        OUTFLOW_TYPES = {
+            models.TransactionType.WITHDRAWAL,
+            models.TransactionType.LOAN_DISBURSEMENT,
+            models.TransactionType.TRANSFER,
+            models.TransactionType.NJANGI_PAYOUT,
+        }
 
         rows_data = {}
         for row in transactions:
-            p_orig = row.purpose or "OTHER"
-            purpose = p_orig.upper()
+            p_orig = (row.purpose or "OTHER").replace("_", " ").upper()
+            section = purpose_map.get(p_orig, "INFLOWS")
             
-            if purpose not in rows_data:
-                rows_data[purpose] = {
-                    "description": p_orig.replace("_", " ").title(),
+            if p_orig not in rows_data:
+                rows_data[p_orig] = {
+                    "description": p_orig,
+                    "section": section,
                     "refs": "",
                     "corp_banks": 0.0, "mf_balico": 0.0, "mf_a": 0.0, "mf_glovic": 0.0,
                     "cash": 0.0, "mobile_om": 0.0, "mobile_mtn": 0.0, 
                     "total": 0.0, "comments": ""
                 }
             
-            amount = float(row.total_amount)
-            # Adjust sign based on transaction type if necessary? 
-            # In Daily Cash Flow matrix, usually absolute movement per purpose/channel is shown.
-            # But flows are positive in their respective sections.
-            
-            channel = row.payment_channel
-            if channel == models.PaymentChannel.BANK_TRANSFER: rows_data[purpose]["corp_banks"] += amount
-            elif channel == models.PaymentChannel.BALI_CO: rows_data[purpose]["mf_balico"] += amount
-            elif channel == models.PaymentChannel.MICROFINANCE_A: rows_data[purpose]["mf_a"] += amount
-            elif channel == models.PaymentChannel.GLOVIC: rows_data[purpose]["mf_glovic"] += amount
-            elif channel == models.PaymentChannel.CASH: rows_data[purpose]["cash"] += amount
-            elif channel == models.PaymentChannel.ORANGE_MONEY: rows_data[purpose]["mobile_om"] += amount
-            elif channel == models.PaymentChannel.MTN_MOMO: rows_data[purpose]["mobile_mtn"] += amount
-            
-            rows_data[purpose]["total"] += amount
-            if row.refs: rows_data[purpose]["refs"] = (rows_data[purpose]["refs"] + ", " + row.refs).strip(", ")
-            if row.all_comments: rows_data[purpose]["comments"] = (rows_data[purpose]["comments"] + "; " + row.all_comments).strip("; ")
-
-        # Distribute into sections
-        for purpose, data in rows_data.items():
-            if any(p in purpose for p in inflow_purposes):
-                sections["INFLOWS"].append(data)
-            elif any(p in purpose for p in expense_purposes):
-                sections["EXPENSES"].append(data)
-            elif any(p in purpose for p in projected_purposes):
-                sections["PROJECTED_EXPENSES"].append(data)
+            # Use signed amount: inflow types are positive, outflow types are negative
+            raw_amount = float(row.total_amount)
+            if row.transaction_type in OUTFLOW_TYPES:
+                amount = -raw_amount
             else:
-                # Default to inflows if unknown for now, or another category
-                sections["INFLOWS"].append(data)
+                amount = raw_amount  # Default to positive for inflow types
 
-        # 4. Final calculation
-        report = {
-            "date": target_date.isoformat(),
+            channel = row.payment_channel
+            if channel == models.PaymentChannel.BANK_TRANSFER: rows_data[p_orig]["corp_banks"] += amount
+            elif channel == models.PaymentChannel.BALI_CO: rows_data[p_orig]["mf_balico"] += amount
+            elif channel == models.PaymentChannel.MICROFINANCE_A: rows_data[p_orig]["mf_a"] += amount
+            elif channel == models.PaymentChannel.GLOVIC: rows_data[p_orig]["mf_glovic"] += amount
+            elif channel == models.PaymentChannel.CASH: rows_data[p_orig]["cash"] += amount
+            elif channel == models.PaymentChannel.ORANGE_MONEY: rows_data[p_orig]["mobile_om"] += amount
+            elif channel == models.PaymentChannel.MTN_MOMO: rows_data[p_orig]["mobile_mtn"] += amount
+            
+            rows_data[p_orig]["total"] += amount
+            if row.refs: rows_data[p_orig]["refs"] = (rows_data[p_orig]["refs"] + ", " + row.refs).strip(", ")
+            if row.all_comments: rows_data[p_orig]["comments"] = (rows_data[p_orig]["comments"] + "; " + row.all_comments).strip("; ")
+
+        # 3b. Add internal Treasury Transfers for the current day
+        day_transfers = db.query(models.VaultTransfer).filter(
+            models.VaultTransfer.status == models.VaultTransferStatus.APPROVED,
+            models.VaultTransfer.approved_at >= start_of_day,
+            models.VaultTransfer.approved_at <= end_of_day
+        ).all()
+        
+        if day_transfers:
+            if "TREASURY_TRANSFER" not in rows_data:
+                rows_data["TREASURY_TRANSFER"] = {
+                    "description": "INTERNAL TREASURY TRANSFERS",
+                    "section": "INFLOWS",
+                    "refs": "",
+                    "corp_banks": 0.0, "mf_balico": 0.0, "mf_a": 0.0, "mf_glovic": 0.0,
+                    "cash": 0.0, "mobile_om": 0.0, "mobile_mtn": 0.0, 
+                    "total": 0.0, "comments": "System Treasury Sweeps"
+                }
+            
+            for transfer in day_transfers:
+                amount = float(transfer.amount)
+                src_acc = all_treasuries.get(transfer.source_treasury_id) if transfer.source_treasury_id else None
+                dst_acc = all_treasuries.get(transfer.destination_treasury_id) if transfer.destination_treasury_id else None
+                
+                src_col = map_treasury_to_col(src_acc) if transfer.source_treasury_id else "cash"
+                dst_col = map_treasury_to_col(dst_acc) if transfer.destination_treasury_id else "cash"
+                
+                rows_data["TREASURY_TRANSFER"][src_col] -= amount
+                rows_data["TREASURY_TRANSFER"][dst_col] += amount
+                if transfer.transfer_ref:
+                    rows_data["TREASURY_TRANSFER"]["refs"] += f"{transfer.transfer_ref}, "
+            
+            # Clean up trailing comma
+            rows_data["TREASURY_TRANSFER"]["refs"] = rows_data["TREASURY_TRANSFER"]["refs"].rstrip(", ")
+
+        for data in rows_data.values():
+            sections[data["section"]].append(data)
+
+        # 4. Calculate cumulative sub-totals specifically for the "TOTAL CASH AND BANK INFLOWS" row
+        # In the requested layout, this row is (Brought Forward + Inflows)
+        cumulative_inflows = {k: bf_row[k] for k in ["corp_banks", "mf_balico", "mf_a", "mf_glovic", "cash", "mobile_om", "mobile_mtn", "total"]}
+        for row in sections["INFLOWS"]:
+            for k in cumulative_inflows:
+                cumulative_inflows[k] += row.get(k, 0.0)
+        
+        cumulative_inflows["description"] = "TOTAL CASH AND BANK INFLOWS"
+
+        return {
+            "date": target_date.strftime("%d/%m/%Y"),
             "year": target_date.year,
+            "version": "v2.2-MATRIX",
             "brought_forward": bf_row,
+            "cumulative_inflows": cumulative_inflows,
             "sections": sections
         }
-        
-        return report
 
     @staticmethod
     def export_to_excel(report_name: str, data: List[Dict[str, Any]] | Dict[str, Any]) -> str:
@@ -403,14 +530,28 @@ class ReportingService:
         import tempfile
         import os
 
+        logger.info(f"EXCEL EXPORT: report_name={report_name}, type(data)={type(data)}")
+
         # Specialized formatting for Daily Cash Flow
-        if report_name == "daily_cash_flow" and isinstance(data, dict) and "sections" in data:
+        if report_name == "daily_cash_flow":
+            logger.info("DASHBOARD: STARTING SPECIALIZED DAILY CASH FLOW EXCEL FORMATTER")
+            if not isinstance(data, dict) or "sections" not in data:
+                logger.error(f"CRITICAL: Daily Cash Flow data is invalid format for specialized exporter. Type: {type(data)}")
+                # Proceed anyway to see if it can handle it, or it will fail naturally
             return ReportingService._format_daily_cash_flow_excel(data)
+
+        logger.info("FALLING BACK TO GENERIC PANDAS EXCEL EXPORT")
+
+        # Specialized formatter for Trial Balance
+        if report_name == "trial_balance" and isinstance(data, dict) and "rows" in data:
+            return ReportingService._format_trial_balance_excel(data)
 
         # Handle different data structures for generic export
         if isinstance(data, dict):
             if "items" in data:
                 df = pd.DataFrame(data["items"])
+            elif "rows" in data:
+                df = pd.DataFrame(data["rows"])
             else:
                 df = pd.DataFrame([data])
         else:
@@ -424,10 +565,126 @@ class ReportingService:
         return path
 
     @staticmethod
+    def _format_trial_balance_excel(data: Dict[str, Any]) -> str:
+        """
+        Produces a formatted Excel Trial Balance with header, account rows grouped by type,
+        a bold totals row at the bottom, and a balanced/unbalanced indicator.
+        """
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
+        import tempfile, os
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Trial Balance"
+
+        blue_fill = PatternFill(start_color="0070C0", fill_type="solid")
+        light_blue_fill = PatternFill(start_color="BDD7EE", fill_type="solid")
+        total_fill = PatternFill(start_color="1F5C99", fill_type="solid")
+        white_font = Font(bold=True, color="FFFFFF", size=10)
+        bold_font = Font(bold=True, size=10)
+        normal_font = Font(size=10)
+        center = Alignment(horizontal="center", vertical="center")
+        right = Alignment(horizontal="right")
+        thin = Border(
+            left=Side(style='thin'), right=Side(style='thin'),
+            top=Side(style='thin'), bottom=Side(style='thin')
+        )
+        num_fmt = '#,##0.00'
+
+        # Title
+        ws.merge_cells('A1:G1')
+        ws['A1'] = f"TRIAL BALANCE (Balance Générale) — As of {data.get('as_of_date', '')}"
+        ws['A1'].font = Font(bold=True, color="FFFFFF", size=13)
+        ws['A1'].fill = blue_fill
+        ws['A1'].alignment = center
+
+        # Header row
+        headers = ["Account Code", "Account Name", "Account Type", "Opening Balance", "Debit (Dr)", "Credit (Cr)", "Closing Balance"]
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=3, column=col, value=h)
+            cell.font = white_font
+            cell.fill = blue_fill
+            cell.alignment = center
+            cell.border = thin
+        ws.row_dimensions[3].height = 22
+
+        # Data rows
+        current_row = 4
+        type_colors = {
+            "ASSET": "E2EFDA", "LIABILITY": "FCE4D6", "EQUITY": "EAD1DC",
+            "INCOME": "D9EAD3", "EXPENSE": "FFF2CC"
+        }
+
+        for row in data.get("rows", []):
+            acc_type = (row.get("account_type") or "").upper()
+            fill_color = type_colors.get(acc_type)
+            row_fill = PatternFill(start_color=fill_color, fill_type="solid") if fill_color else None
+            values = [
+                row.get("account_code", ""),
+                row.get("account_name", ""),
+                acc_type,
+                row.get("opening_balance", 0),
+                row.get("debit", 0),
+                row.get("credit", 0),
+                row.get("closing_balance", 0),
+            ]
+            for col, val in enumerate(values, 1):
+                cell = ws.cell(row=current_row, column=col, value=val)
+                cell.font = normal_font
+                cell.border = thin
+                if isinstance(val, float) or isinstance(val, int) and col > 3:
+                    cell.number_format = num_fmt
+                    cell.alignment = right
+                if row_fill:
+                    cell.fill = row_fill
+            current_row += 1
+
+        # Totals row
+        totals = data.get("totals", {})
+        total_values = [
+            "", "TOTALS", "",
+            totals.get("opening_balance", 0),
+            totals.get("debit", 0),
+            totals.get("credit", 0),
+            totals.get("net_balance", 0),
+        ]
+        for col, val in enumerate(total_values, 1):
+            cell = ws.cell(row=current_row, column=col, value=val)
+            cell.font = Font(bold=True, color="FFFFFF", size=10)
+            cell.fill = total_fill
+            cell.border = thin
+            if isinstance(val, (float, int)) and col > 3:
+                cell.number_format = num_fmt
+                cell.alignment = right
+
+        # Balance indicator
+        current_row += 1
+        is_balanced = totals.get("is_balanced", False)
+        status_text = "✔ BALANCED — Debits equal Credits" if is_balanced else "✘ UNBALANCED — Check GL Entries"
+        status_cell = ws.cell(row=current_row, column=1, value=status_text)
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=7)
+        status_cell.font = Font(bold=True, color="FFFFFF", size=10)
+        status_cell.fill = PatternFill(start_color="375623" if is_balanced else "C00000", fill_type="solid")
+        status_cell.alignment = center
+
+        # Column widths
+        ws.column_dimensions['A'].width = 16
+        ws.column_dimensions['B'].width = 42
+        ws.column_dimensions['C'].width = 14
+        for col_letter in 'DEFG':
+            ws.column_dimensions[col_letter].width = 20
+
+        fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="TrialBalance_")
+        os.close(fd)
+        wb.save(path)
+        return path
+
+
+    @staticmethod
     def _format_daily_cash_flow_excel(report_data: Dict[str, Any]) -> str:
         """
         Advanced Excel formatting for Daily Cash Flow Statement matching the requested image.
-        Uses openpyxl for merging, borders, and backgrounds.
         """
         from openpyxl import Workbook
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -440,67 +697,66 @@ class ReportingService:
 
         # Styles
         title_font = Font(bold=True, color="FFFFFF", size=14)
-        header_font = Font(bold=True, color="FFFFFF", size=10)
+        header_font = Font(bold=True, color="FFFFFF", size=9)
         bold_font = Font(bold=True)
         center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        left_align = Alignment(horizontal="left", vertical="center")
-        blue_fill = PatternFill(start_color="3366FF", fill_type="solid")
-        light_blue_fill = PatternFill(start_color="CCE5FF", fill_type="solid")
-        grey_fill = PatternFill(start_color="E0E0E0", fill_type="solid")
-        
         thin_border = Border(
             left=Side(style='thin'), right=Side(style='thin'), 
             top=Side(style='thin'), bottom=Side(style='thin')
         )
-
+        blue_fill = PatternFill(start_color="0070C0", fill_type="solid") # Stronger Blue
+        light_blue_fill = PatternFill(start_color="BDD7EE", fill_type="solid") # Light Blue for sub-totals
+        grey_fill = PatternFill(start_color="D9D9D9", fill_type="solid") # Standard Grey for headers
+        
         # 1. Title
         ws.merge_cells('A1:L1')
         title_cell = ws['A1']
-        title_cell.value = f"DAILY CASH FLOW STATEMENT {report_data['year']}"
+        title_cell.value = f"DAILY CASH FLOW STATEMENT {report_data.get('year', 2026)} ({report_data.get('version', 'FINAL')})"
         title_cell.font = title_font
         title_cell.fill = blue_fill
         title_cell.alignment = center_align
 
-        # 2. Main Headers
-        # Column A, B, C span rows 3 to 5
-        for col, text in [(1, "DATES"), (2, "DESCRIPTION"), (3, "REFS"), (11, "TOTAL"), (12, "COMMENTS")]:
+        # 2. Main Headers (Rows 3-5)
+        headers = [
+            (1, "DATES"), (2, "DESCRIPTION"), (3, "REFS"), (11, "TOTAL"), (12, "COMMENTS")
+        ]
+        for col, text in headers:
             ws.merge_cells(start_row=3, start_column=col, end_row=5, end_column=col)
             cell = ws.cell(row=3, column=col)
             cell.value = text
             cell.font = header_font
             cell.fill = blue_fill
             cell.alignment = center_align
-            # Apply border to all cells in the merge range
-            for r in range(3, 6):
-                ws.cell(row=r, column=col).border = thin_border
+            for r in range(3, 6): ws.cell(row=r, column=col).border = thin_border
 
-        # PAYMENT CENTRES top header (D3:J3)
+        # Top level merge: PAYMENT CENTRES
         ws.merge_cells(start_row=3, start_column=4, end_row=3, end_column=10)
         cell = ws.cell(row=3, column=4)
         cell.value = "PAYMENT CENTRES"
         cell.font = header_font
         cell.fill = blue_fill
         cell.alignment = center_align
-        for c in range(4, 11):
-            ws.cell(row=3, column=c).border = thin_border
+        for c in range(4, 11): ws.cell(row=3, column=c).border = thin_border
 
-        # Sub-headers (Row 4)
-        sub_headers = [
-            (4, 5, "CORPORATE BANKS"), (6, 8, "MICRO FINANCE / PARTNERS"), (9, 10, "MOBILE CASH")
+        # Row 4: Column groups
+        groups = [
+            (4, 4, "CORPORATE BANKS"), 
+            (5, 7, "MICRO FINANCE INSTITUTIONS AND COOPERATIVES"),
+            (8, 8, "CASH"),
+            (9, 10, "MOBILE CASH")
         ]
-        for start_col, end_col, text in sub_headers:
-            ws.merge_cells(start_row=4, start_column=start_col, end_row=4, end_column=end_col)
-            cell = ws.cell(row=4, column=start_col)
+        for start_c, end_c, text in groups:
+            if start_c != end_c: ws.merge_cells(start_row=4, start_column=start_c, end_row=4, end_column=end_c)
+            cell = ws.cell(row=4, column=start_c)
             cell.value = text
             cell.font = header_font
             cell.fill = blue_fill
             cell.alignment = center_align
-            for c in range(start_col, end_col + 1):
-                ws.cell(row=4, column=c).border = thin_border
+            for c in range(start_c, end_c + 1): ws.cell(row=4, column=c).border = thin_border
 
-        # Sub-sub-headers (Row 5)
+        # Row 5: Specific columns
         cols = [
-            (4, "CORPBANK"), (5, "BALICO-X"), (6, "BALI CO"), (7, "A"), (8, "GLOVIC"), (9, "OM"), (10, "MTN MoMo")
+            (4, "A"), (5, "BALI CO"), (6, "A"), (7, "GLOVIC"), (8, "CASH"), (9, "OM"), (10, "MTN MoMo")
         ]
         for col, text in cols:
             cell = ws.cell(row=5, column=col)
@@ -510,93 +766,137 @@ class ReportingService:
             cell.alignment = center_align
             cell.border = thin_border
 
-        # 3. Data Printing
+        # 3. Data Printing Logic
         current_row = 6
         
-        def write_row(row_data, is_total=False):
+        def write_row(row_data, is_total=False, fill=None):
             nonlocal current_row
-            desc_cell = ws.cell(row=current_row, column=2, value=row_data.get("description", ""))
-            ws.cell(row=current_row, column=1, value=report_data.get("date", "")) # Date
+            ws.cell(row=current_row, column=1, value=report_data.get("date", ""))
+            ws.cell(row=current_row, column=2, value=row_data.get("description", ""))
             ws.cell(row=current_row, column=3, value=row_data.get("refs", ""))
             
-            # Map channels
-            mapping = {4: "corp_banks", 5: "mf_balico", 6: "mf_balico", 7: "mf_a", 8: "mf_glovic", 9: "mobile_om", 10: "mobile_mtn", 11: "total"}
+            mapping = {4: "corp_banks", 5: "mf_balico", 6: "mf_a", 7: "mf_glovic", 8: "cash", 9: "mobile_om", 10: "mobile_mtn", 11: "total"}
             for col, key in mapping.items():
                 val = row_data.get(key, 0.0)
-                cell = ws.cell(row=current_row, column=col, value=val)
-                cell.number_format = '#,##0'
-                if is_total: cell.font = bold_font
+                cell = ws.cell(row=current_row, column=col, value=val if val != 0 else "-")
+                if val != 0: cell.number_format = '#,##0'
+                cell.alignment = Alignment(horizontal="right")
                 cell.border = thin_border
-            
-            ws.cell(row=current_row, column=12, value=row_data.get("comments", ""))
-            
-            # Styles for desc and date
+                if is_total: cell.font = bold_font
+                if fill: cell.fill = fill
+
             for col in [1, 2, 3, 12]:
-                ws.cell(row=current_row, column=col).border = thin_border
-                if is_total: ws.cell(row=current_row, column=col).font = bold_font
+                cell = ws.cell(row=current_row, column=col)
+                cell.border = thin_border
+                if is_total: cell.font = bold_font
+                if fill: cell.fill = fill
             
             current_row += 1
+            return row_data
+
+        # Actual categories
+        def sum_section(section_name):
+            total = {k: 0.0 for k in ["corp_banks", "mf_balico", "mf_a", "mf_glovic", "cash", "mobile_om", "mobile_mtn", "total"]}
+            for row in report_data["sections"].get(section_name, []):
+                write_row(row)
+                for k in total: total[k] += row.get(k, 0.0)
+            return total
 
         # A. Brought Forward
-        write_row(report_data["brought_forward"])
-        # Format BF row
-        for c in range(1, 13):
-            ws.cell(row=current_row-1, column=c).fill = light_blue_fill
+        write_row(report_data["brought_forward"], fill=light_blue_fill)
 
-        # B. Inflows Section
-        ws.cell(row=current_row, column=2, value="INFLOWS").font = bold_font
+        # B. Inflows
+        _ = sum_section("INFLOWS") # Write individual inflow rows, ignore raw sum
+        
+        # Total Inflows Row (CUMULATIVE in the standard layout)
+        inflow_total = report_data.get("cumulative_inflows", {})
+        write_row(inflow_total, is_total=True, fill=light_blue_fill)
+
+        # C. Expenses
         current_row += 1
-        
-        inflow_total = {k: 0.0 for k in ["corp_banks", "mf_balico", "mf_a", "mf_glovic", "mobile_om", "mobile_mtn", "total"]}
-        for row in report_data["sections"]["INFLOWS"]:
-            write_row(row)
-            for k in inflow_total: inflow_total[k] += row.get(k, 0.0)
-        
-        # Total Inflows row
-        inflow_total["description"] = "TOTAL INFLOWS"
-        write_row(inflow_total, is_total=True)
-        for c in range(1, 13): ws.cell(row=current_row-1, column=c).fill = grey_fill
-
-        # C. Expenses Section
         ws.cell(row=current_row, column=2, value="EXPENSES").font = bold_font
         current_row += 1
         
-        expense_total = {k: 0.0 for k in ["corp_banks", "mf_balico", "mf_a", "mf_glovic", "mobile_om", "mobile_mtn", "total"]}
-        for row in report_data["sections"]["EXPENSES"]:
-            write_row(row)
-            for k in expense_total: expense_total[k] += row.get(k, 0.0)
-            
-        expense_total["description"] = "TOTAL EXPENSES"
-        write_row(expense_total, is_total=True)
-        for c in range(1, 13): ws.cell(row=current_row-1, column=c).fill = grey_fill
+        ws.cell(row=current_row, column=2, value="A) CASH EXPENSES (office)")
+        current_row += 1
+        exp_a = sum_section("EXPENSES_A")
+        exp_a["description"] = "TOTAL CASH EXPENSES"
+        write_row(exp_a, is_total=True)
 
-        # D. Projected Section
+        current_row += 1
+        ws.cell(row=current_row, column=2, value="B) EXPENSES CLIENT")
+        current_row += 1
+        exp_b = sum_section("EXPENSES_B")
+        exp_b["description"] = "TOTAL CLIENTS EXPENSES"
+        write_row(exp_b, is_total=True)
+
+        full_exp = {k: exp_a[k] + exp_b[k] for k in exp_a if k != "description"}
+        
+        # D. Projected
+        current_row += 1
         ws.cell(row=current_row, column=2, value="PROJECTED EXPENSES").font = bold_font
         current_row += 1
-        for row in report_data["sections"]["PROJECTED_EXPENSES"]:
-            write_row(row)
 
-        # E. Closing Balance (Balance @ Hand)
+        ws.cell(row=current_row, column=2, value="A) SALARIES")
+        current_row += 1
+        proj_a = sum_section("PROJECTED_A")
+        proj_a["description"] = "TOTAL SALARIES"
+        write_row(proj_a, is_total=True)
+
+        ws.cell(row=current_row, column=2, value="B) LOANS")
+        current_row += 1
+        proj_b = sum_section("PROJECTED_B")
+        proj_b["description"] = "TOTAL LOANS"
+        write_row(proj_b, is_total=True)
+
+        ws.cell(row=current_row, column=2, value="D) TAXATION AND CNPS")
+        current_row += 1
+        proj_c = sum_section("PROJECTED_C")
+        proj_c["description"] = "TOTAL TAXATION AND CNPS"
+        write_row(proj_c, is_total=True)
+
+        full_proj = {k: proj_a[k] + proj_b[k] + proj_c[k] for k in proj_a if k != "description"}
+        full_proj["description"] = "TOTAL PROJECTIONS"
+        write_row(full_proj, is_total=True)
+
+        # Totals
+        total_ex_pr = {k: full_exp[k] + full_proj[k] for k in full_exp}
+        total_ex_pr["description"] = "TOTAL DAILY EXPS + PROJECTIONS"
+        write_row(total_ex_pr, is_total=True, fill=light_blue_fill)
+
+        # Balance @ Hand
+        # Note: inflow_total (cumulative_inflows) already includes Brought Forward + day's Inflows.
+        # So we must NOT add brought_forward again — it would double-count it.
+        # Formula: BALANCE @ HAND = (BF + Inflows) - Cash Expenses - Client Expenses
         closing_bal = {
-            "description": "BALANCE @ HAND",
-            "corp_banks": report_data["brought_forward"]["corp_banks"] + inflow_total["corp_banks"] - expense_total["corp_banks"],
-            "mf_balico": report_data["brought_forward"]["mf_balico"] + inflow_total["mf_balico"] - expense_total["mf_balico"],
-            "mf_a": report_data["brought_forward"]["mf_a"] + inflow_total["mf_a"] - expense_total["mf_a"],
-            "mf_glovic": report_data["brought_forward"]["mf_glovic"] + inflow_total["mf_glovic"] - expense_total["mf_glovic"],
-            "mobile_om": report_data["brought_forward"]["mobile_om"] + inflow_total["mobile_om"] - expense_total["mobile_om"],
-            "mobile_mtn": report_data["brought_forward"]["mobile_mtn"] + inflow_total["mobile_mtn"] - expense_total["mobile_mtn"],
-            "total": report_data["brought_forward"]["total"] + inflow_total["total"] - expense_total["total"]
+            "description": "TOTAL BALANCE @ HAND",
+            "corp_banks": inflow_total["corp_banks"] - exp_a["corp_banks"] - exp_b["corp_banks"],
+            "mf_balico": inflow_total["mf_balico"] - exp_a["mf_balico"] - exp_b["mf_balico"],
+            "mf_a": inflow_total["mf_a"] - exp_a["mf_a"] - exp_b["mf_a"],
+            "mf_glovic": inflow_total["mf_glovic"] - exp_a["mf_glovic"] - exp_b["mf_glovic"],
+            "cash": inflow_total["cash"] - exp_a["cash"] - exp_b["cash"],
+            "mobile_om": inflow_total["mobile_om"] - exp_a["mobile_om"] - exp_b["mobile_om"],
+            "mobile_mtn": inflow_total["mobile_mtn"] - exp_a["mobile_mtn"] - exp_b["mobile_mtn"]
         }
-        write_row(closing_bal, is_total=True)
-        for c in range(1, 13): ws.cell(row=current_row-1, column=c).fill = blue_fill; ws.cell(row=current_row-1, column=c).font = Font(bold=True, color="FFFFFF")
+        closing_bal["total"] = sum(v for k, v in closing_bal.items() if k != "description")
+        write_row(closing_bal, is_total=True, fill=blue_fill)
+        for c in range(1, 13): ws.cell(row=current_row-1, column=c).font = Font(bold=True, color="FFFFFF")
 
-        # Column widths
+        # Balance After projections
+        final_bal = {k: v for k, v in closing_bal.items()}
+        for k in final_bal:
+            if k != "description" and k in full_proj: final_bal[k] -= full_proj[k]
+        final_bal["description"] = "BALANCE AFTER PROJECTIONS"
+        # IMPORTANT: final_bal was copied from closing_bal which already has a 'total' key.
+        # We must exclude 'total' from the sum, otherwise it gets counted twice.
+        final_bal["total"] = sum(v for k, v in final_bal.items() if k not in ("description", "total"))
+        write_row(final_bal, is_total=True, fill=blue_fill)
+        for c in range(1, 13): ws.cell(row=current_row-1, column=c).font = Font(bold=True, color="FFFFFF")
+
+        # Dimensions
         ws.column_dimensions['B'].width = 40
-        ws.column_dimensions['C'].width = 15
-        for col_letter in 'DEFGHIJK':
-             ws.column_dimensions[col_letter].width = 12
+        for col_letter in 'CDEFGHIJKL': ws.column_dimensions[col_letter].width = 15
 
-        # Create temp file
         fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="DailyCashFlow_")
         os.close(fd)
         wb.save(path)

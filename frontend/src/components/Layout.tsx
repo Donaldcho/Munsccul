@@ -1,5 +1,6 @@
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
+import IntercomWidget from './IntercomWidget'
 import {
   HomeIcon,
   UsersIcon,
@@ -251,6 +252,9 @@ export default function Layout() {
           </div>
         </main>
       </div>
+
+      {/* Global Intercom Widget */}
+      {user && <IntercomWidget />}
     </div>
   )
 }
