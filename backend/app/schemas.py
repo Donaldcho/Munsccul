@@ -708,9 +708,29 @@ class BranchDashboard(BaseModel):
 
 
 # ============== SYNC SCHEMAS ==============
-class SyncRequest(BaseModel):
-    branch_id: int
-    transactions: List[Dict[str, Any]]
+class SyncTransactionItem(BaseModel):
+    """
+    Represents a single transaction packet coming from a branch outbox.
+    Matches the JSON payload stored in the branch's offline_queue.
+    """
+    transaction_ref: str
+    account_id: str  # This is the account_number from the branch
+    amount: float
+    transaction_type: str
+    debit_account: Optional[str] = None
+    credit_account: Optional[str] = None
+    currency: str = "XAF"
+    branch_id: int  # This maps to branch_origin_id in the DB
+    created_by: int
+    description: Optional[str] = None
+    timestamp: datetime
+
+class BulkSyncRequest(BaseModel):
+    """
+    The wrapper for the bulk payload sent by the branch Sync Worker.
+    """
+    branch_code: str
+    transactions: List[SyncTransactionItem]
 
 
 class SyncResponse(BaseModel):

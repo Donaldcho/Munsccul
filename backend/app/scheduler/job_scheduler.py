@@ -34,6 +34,7 @@ class JobType(str, Enum):
     RISK_SCORING = "RISK_SCORING"
     DATA_BACKUP = "DATA_BACKUP"
     AUDIT_LOG_ARCHIVE = "AUDIT_LOG_ARCHIVE"
+    OFFLINE_SYNC = "OFFLINE_SYNC"
     CUSTOM = "CUSTOM"
 
 
@@ -326,6 +327,82 @@ class RiskScoringJob(JobExecutor):
             return JobResult(success=False, message=f"Risk scoring job failed: {str(e)}")
 
 
+class SyncOfflineQueueJob(JobExecutor):
+    """Periodically sync offline transactions to Capital HQ"""
+    
+    async def execute(self, params: Dict[str, Any], db: Session) -> JobResult:
+        try:
+            import requests
+            from app.config import settings
+            
+            # 1. Fetch pending items
+            pending_items = db.query(models.OfflineQueue).filter(
+                models.OfflineQueue.status == models.SyncStatus.PENDING
+            ).order_by(models.OfflineQueue.created_at.asc()).limit(settings.SYNC_BATCH_SIZE).all()
+            
+            if not pending_items:
+                return JobResult(success=True, message="No pending items to sync")
+            
+            # 2. Prepare payloads
+            payloads = [json.loads(item.payload) for item in pending_items]
+            headers = {
+                "Authorization": f"Bearer {settings.BRANCH_SYNC_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            # 3. Transmit to Capital
+            response = requests.post(
+                f"{settings.CAPITAL_API_URL}/transactions/bulk",
+                json={
+                    "branch_code": settings.BRANCH_CODE,
+                    "transactions": payloads
+                },
+                headers=headers,
+                timeout=15
+            )
+            
+            if response.status_code in (200, 201):
+                # 4. Success: Mark as SYNCED
+                for item in pending_items:
+                    item.status = models.SyncStatus.SYNCED
+                    item.synced_at = datetime.utcnow()
+                    
+                    # Update source transaction status if applicable
+                    if item.transaction_type in [t.value for t in models.TransactionType]:
+                        payload = json.loads(item.payload)
+                        txn_ref = payload.get("transaction_ref")
+                        if txn_ref:
+                            txn = db.query(models.Transaction).filter(
+                                models.Transaction.transaction_ref == txn_ref
+                            ).first()
+                            if txn:
+                                txn.sync_status = models.SyncStatus.SYNCED
+                
+                db.commit()
+                return JobResult(
+                    success=True, 
+                    message=f"Successfully synced {len(pending_items)} items to Capital"
+                )
+            else:
+                # 5. Failure: Update retry count
+                for item in pending_items:
+                    item.retry_count += 1
+                    item.error_message = f"Capital API error: {response.status_code} - {response.text[:200]}"
+                
+                db.commit()
+                return JobResult(
+                    success=False, 
+                    message=f"Capital API rejected sync: {response.status_code}"
+                )
+                
+        except requests.exceptions.ConnectionError:
+            return JobResult(success=True, message="Capital HQ unreachable (Offline Mode)")
+        except Exception as e:
+            import traceback
+            logger.error(f"Sync job unexpected error: {str(e)}\n{traceback.format_exc()}")
+            return JobResult(success=False, message=f"Sync failed: {str(e)}")
+
+
 class SchedulerService:
     """
     Central scheduler service - Fineract-style job management
@@ -349,6 +426,7 @@ class SchedulerService:
             JobType.LOAN_OVERDUE_CHECK: LoanOverdueCheckJob(),
             JobType.STANDING_INSTRUCTION: StandingInstructionJob(),
             JobType.RISK_SCORING: RiskScoringJob(),
+            JobType.OFFLINE_SYNC: SyncOfflineQueueJob(),
         }
         self._initialized = True
     
@@ -530,4 +608,13 @@ def setup_default_jobs():
         cron_expression="0 2 * * *",  # 2 AM daily
     )
     
+
+    # Offline Sync every minute
+    scheduler.schedule_job(
+        job_id="OFFLINE_SYNC_WORKER",
+        job_type=JobType.OFFLINE_SYNC,
+        trigger_type="interval",
+        trigger_params={"seconds": 60}
+    )
+
     print("Default jobs scheduled")

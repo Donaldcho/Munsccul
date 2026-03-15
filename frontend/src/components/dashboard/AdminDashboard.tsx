@@ -13,6 +13,7 @@ import { useAuthStore } from '../../stores/authStore'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
 import { formatCurrency } from '../../utils/formatters'
+import SyncMonitor from './SyncMonitor'
 
 interface AdminDashboardProps {
     stats: any
@@ -249,8 +250,11 @@ export default function AdminDashboard({ stats }: AdminDashboardProps) {
                 </div>
             </div>
 
-            {/* 1. Stat Cards (System Health) */}
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Real-time Sync Monitor */}
+            <SyncMonitor />
+
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 {statCards.map((card) => (
                     <div key={card.name} className="stat-card">
                         <div className="flex items-center">

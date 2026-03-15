@@ -51,15 +51,17 @@ class AccountingService:
                 # Fallback or Log: If no rule, we might need manual mapping or fail
                 return []
             
-            debit_gl = rule.debit_account
-            credit_gl = rule.credit_account
-        else:
-            debit_gl = AccountingService.get_gl_account_by_code(db, debit_gl_code)
-            credit_gl = AccountingService.get_gl_account_by_code(db, credit_gl_code)
-
-        if not debit_gl or not credit_gl:
-            # Cannot proceed without both GL accounts
-            return []
+            debit_gl_code = rule.debit_account.account_code
+            credit_gl_code = rule.credit_account.account_code
+        
+        # 2. Get GL accounts
+        debit_gl = AccountingService.get_gl_account_by_code(db, debit_gl_code)
+        credit_gl = AccountingService.get_gl_account_by_code(db, credit_gl_code)
+        
+        if not debit_gl:
+            raise ValueError(f"CRITICAL: Debit GL Account {debit_gl_code} not found in Chart of Accounts.")
+        if not credit_gl:
+            raise ValueError(f"CRITICAL: Credit GL Account {credit_gl_code} not found in Chart of Accounts.")
 
         entries = []
         now = datetime.utcnow()
@@ -93,6 +95,110 @@ class AccountingService:
         entries.append(credit_entry)
 
         return entries
+
+    @staticmethod
+    def get_policy_value(db: Session, key: str, default: str) -> str:
+        """Fetch a dynamic policy value from the database."""
+        policy = db.query(models.GlobalPolicy).filter(
+            models.GlobalPolicy.policy_key == key,
+            models.GlobalPolicy.status == models.PolicyStatus.ACTIVE
+        ).first()
+        return policy.policy_value if policy else default
+
+    @staticmethod
+    def record_inter_branch_withdrawal(
+        db: Session,
+        member_savings_gl: str,
+        serving_branch_teller_gl: str,
+        amount: Decimal,
+        home_branch_id: int,
+        serving_branch_id: int,
+        reference: str,
+        created_by: int
+    ):
+        """
+        Record a cross-branch withdrawal using Class 8 Clearing accounts.
+        Ensures the network balances out at HQ.
+        """
+        transit_gl = AccountingService.get_policy_value(db, "gl_map_inter_branch_transit", "8010")
+        
+        # 1. At Serving Branch (where member is standing)
+        # Debit: Inter-Branch Transit (Asset - "They owe us")
+        # Credit: Teller Drawer (Asset - "Cash is gone")
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=f"SERV-{reference}",
+            transaction_type="INTER_BRANCH_CLEARING",
+            amount=amount,
+            description=f"Inter-branch withdrawal: Serving {serving_branch_id} for Home {home_branch_id}",
+            created_by=created_by,
+            debit_gl_code=transit_gl,
+            credit_gl_code=serving_branch_teller_gl
+        )
+        
+        # 2. At Home Branch (where member's account belongs)
+        # Debit: Member Savings (Liability - "Savings decreased")
+        # Credit: Inter-Branch Transit (Liability - "We owe them")
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=f"HOME-{reference}",
+            transaction_type="INTER_BRANCH_CLEARING",
+            amount=amount,
+            description=f"Inter-branch withdrawal: Home {home_branch_id} payout at {serving_branch_id}",
+            created_by=created_by,
+            debit_gl_code=member_savings_gl,
+            credit_gl_code=transit_gl
+        )
+
+    @staticmethod
+    def record_eod_cash_variance(
+        db: Session,
+        branch_id: int,
+        expected_amount: Decimal,
+        actual_amount: Decimal,
+        teller_gl: str,
+        reference: str,
+        created_by: int
+    ) -> Decimal:
+        """
+        Auto-journal cash discrepancies discovered during EOD.
+        """
+        variance = Decimal(str(actual_amount)) - Decimal(str(expected_amount))
+        if variance == 0:
+            return variance
+
+        if variance < 0:
+            # Shortage: Teller lost money (Expense)
+            # Debit: Shortage GL (5900)
+            # Credit: Teller GL (1020)
+            shortage_gl = AccountingService.get_policy_value(db, "gl_map_eod_shortage", "5900")
+            AccountingService.record_transaction(
+                db=db,
+                transaction_id=reference,
+                transaction_type="EOD_SHORTAGE",
+                amount=abs(variance),
+                description=f"EOD Cash Shortage: Ref {reference}",
+                created_by=created_by,
+                debit_gl_code=shortage_gl,
+                credit_gl_code=teller_gl
+            )
+        else:
+            # Overage: Teller has extra money (Income)
+            # Debit: Teller GL (1020)
+            # Credit: Overage GL (4900)
+            overage_gl = AccountingService.get_policy_value(db, "gl_map_eod_overage", "4900")
+            AccountingService.record_transaction(
+                db=db,
+                transaction_id=reference,
+                transaction_type="EOD_OVERAGE",
+                amount=variance,
+                description=f"EOD Cash Overage: Ref {reference}",
+                created_by=created_by,
+                debit_gl_code=teller_gl,
+                credit_gl_code=overage_gl
+            )
+            
+        return variance
 
     @staticmethod
     def get_trial_balance(db: Session) -> dict:

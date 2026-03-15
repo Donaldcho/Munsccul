@@ -277,16 +277,24 @@ def generate_account_number() -> str:
     return f"ACC-{date_part}-{random_part}"
 
 
-def generate_transaction_ref() -> str:
-    """Generate unique transaction reference"""
+def generate_transaction_ref(branch_code: str = None) -> str:
+    """
+    Generate a globally unique, branch-prefixed transaction reference.
+    Example: BUEA-TXN-20260315-A1B2C3D4
+    """
     import uuid
+    import os
     from datetime import datetime
     
-    # Format: TXN-YYYYMMDD-UUID(first 8 chars)
+    # Fallback to config/env if branch_code isn't explicitly passed
+    from app.config import settings
+    code = branch_code or settings.BRANCH_CODE
+    
+    # Format: CODE-TXN-YYYYMMDD-UUID(first 8 chars)
     date_part = datetime.now().strftime("%Y%m%d")
     uuid_part = str(uuid.uuid4())[:8].upper()
     
-    return f"TXN-{date_part}-{uuid_part}"
+    return f"{code}-TXN-{date_part}-{uuid_part}"
 
 
 def generate_loan_number() -> str:

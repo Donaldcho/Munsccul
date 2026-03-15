@@ -109,9 +109,32 @@ def create_double_entry_transaction(
             detail=f"Invalid transaction type for double entry setup: {transaction_type}"
         )
     
+    # Determine branch ID
+    branch = db.query(models.Branch).join(models.User).filter(models.User.id == created_by).first()
+    branch_id = branch.id if branch else None
+    
+    # 3. INTER-BRANCH DETECTION (Distributed Logic)
+    # If the member's account belongs to a different branch than the teller
+    is_inter_branch = False
+    if account.member and account.member.branch_id != branch_id:
+        is_inter_branch = True
+        transit_gl = AccountingService.get_policy_value(db, "gl_map_inter_branch_transit", "8010")
+        
+        # Override the clearing side for the serving branch
+        if transaction_type == models.TransactionType.WITHDRAWAL:
+            # Debit should be transit-GL (Asset - "They owe us") instead of member-GL
+            debit_account_code = transit_gl
+        elif transaction_type == models.TransactionType.DEPOSIT:
+            # Credit should be transit-GL (Liability - "We owe them") instead of member-GL
+            credit_account_code = transit_gl
+
+    # Generate reference with branch code
+    from app.config import settings
+    txn_ref = generate_transaction_ref(settings.BRANCH_CODE)
+    
     # Create transaction record
     transaction = models.Transaction(
-        transaction_ref=generate_transaction_ref(),
+        transaction_ref=txn_ref,
         account_id=account.id,
         transaction_type=transaction_type,
         amount=amount,
@@ -127,10 +150,37 @@ def create_double_entry_transaction(
         comments=comments,
         created_by=created_by,
         created_at=datetime.utcnow(),
-        branch_origin_id=db.query(models.User.branch_id).filter(models.User.id == created_by).scalar()
+        branch_origin_id=branch_id,
+        sync_status=models.SyncStatus.PENDING
     )
     
     db.add(transaction)
+    db.flush() # Ensure transaction gets an ID if needed for relations
+    
+    # OUTBOX PATTERN: Queue for background sync to Capital
+    import json
+    sync_payload = {
+        "transaction_ref": txn_ref,
+        "account_id": account.account_number,
+        "transaction_type": transaction_type.value,
+        "amount": float(amount),
+        "currency": "XAF",
+        "debit_account": debit_account_code,
+        "credit_account": credit_account_code,
+        "description": description,
+        "branch_id": branch_id,
+        "created_by": created_by,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    outbox_entry = models.OfflineQueue(
+        transaction_type=transaction_type.value,
+        payload=json.dumps(sync_payload),
+        branch_id=branch_id,
+        created_by=created_by,
+        status=models.SyncStatus.PENDING
+    )
+    db.add(outbox_entry)
     
     # Update account balance
     account.balance = new_balance

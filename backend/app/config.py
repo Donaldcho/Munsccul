@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # COBAC Reporting
     COBAC_INSTITUTION_CODE: str = os.getenv("COBAC_INSTITUTION_CODE", "MUNSCCUL001")
     
+    # Sync Settings - Distributed Architecture
+    BRANCH_CODE: str = os.getenv("BRANCH_CODE", "HO")  # Default to Head Office
+    CAPITAL_API_URL: str = os.getenv("CAPITAL_API_URL", "https://capital.munsccul.com/api/v1/sync/receive")
+    BRANCH_SYNC_KEY: str = os.getenv("BRANCH_SYNC_KEY", "your-secure-branch-key")
+    
     # Data Sovereignty - Local Cameroon hosting
     DATA_CENTER_REGION: str = "Camtel-Zamengoue"
     

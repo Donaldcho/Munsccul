@@ -41,7 +41,10 @@ from app.routers import (
     intercom,
     kyc,
     treasury,
-    policies
+    policies,
+    sync,
+    capital_reports,
+    sync_monitor
 )
 
 # Configure logging
@@ -201,6 +204,9 @@ app.include_router(intercom.router, prefix="/api/v1")  # Secure Internal Interco
 app.include_router(kyc.router, prefix="/api/v1")  # KYC OCR Scanner
 app.include_router(treasury.router, prefix="/api/v1")  # Treasury Management
 app.include_router(policies.router, prefix="/api/v1")  # Board Governance Policies
+app.include_router(sync.router, prefix="/api/v1")  # Capital Sync Receiver
+app.include_router(capital_reports.router, prefix="/api/v1")  # Global Reports
+app.include_router(sync_monitor.router, prefix="/api/v1")  # Admin Sync Monitor (WS)
 
 # Health check endpoint
 @app.get("/health", tags=["Health"])

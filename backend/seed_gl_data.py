@@ -13,50 +13,48 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 def seed_gl_data():
-    # Local Override for dev execution
-    DATABASE_URL = "postgresql://camccul:camccul_secure_password@localhost:5434/camccul_banking"
-    engine = create_engine(DATABASE_URL)
-    SessionOverride = sessionmaker(bind=engine)
-    db = SessionOverride()
+    db = SessionLocal()
     try:
         print("Starting GL Seeding (COBAC/OHADA Standards)...")
         
         # 1. Chart of Accounts (COA)
-        # Category 1: Assets (What the Credit Union owns)
         coa = [
-            # 1000 - Cash and Equivalents
+            # Category 1: Assets
             {"code": "1010", "name": "Main Vault - Cash", "type": "ASSET", "class": 1, "category": "10"},
-            {"code": "1020", "name": "Teller 1 Drawer", "type": "ASSET", "class": 1, "category": "10"},
-            
-            # 1030 - Commercial Bank Placements
-            {"code": "1030", "name": "Commercial Banks (General)", "type": "ASSET", "class": 1, "category": "10"},
+            {"code": "1020", "name": "Teller Drawers (Tills)", "type": "ASSET", "class": 1, "category": "10"},
             {"code": "1031", "name": "Afriland First Bank", "type": "ASSET", "class": 1, "category": "10"},
             {"code": "1032", "name": "BALICO / CCA Bank", "type": "ASSET", "class": 1, "category": "10"},
-            
-            # 1040 - Mobile Money Placements
-            {"code": "1040", "name": "Mobile Money (General)", "type": "ASSET", "class": 1, "category": "10"},
             {"code": "1041", "name": "MTN Mobile Money Wallet", "type": "ASSET", "class": 1, "category": "10"},
             {"code": "1042", "name": "Orange Money Wallet", "type": "ASSET", "class": 1, "category": "10"},
+            {"code": "1050", "name": "Cash in Transit", "type": "ASSET", "class": 1, "category": "10"},
+            {"code": "1210", "name": "Ordinary Loan Portfolio", "type": "ASSET", "class": 1, "category": "12"},
+            {"code": "1290", "name": "Provision for Bad Debts", "type": "ASSET", "class": 1, "category": "12"},
             
-            # 1200 - Loans to Members
-            {"code": "1210", "name": "Ordinary Loans Portfolio", "type": "ASSET", "class": 1, "category": "12"},
-            {"code": "1220", "name": "School Fees Loans Portfolio", "type": "ASSET", "class": 1, "category": "12"},
-            
-            # 2000 - Liabilities (What the Credit Union owes)
+            # Category 2: Liabilities
             {"code": "2010", "name": "Member Savings Deposits", "type": "LIABILITY", "class": 2, "category": "20"},
             {"code": "2020", "name": "Member Share Capital", "type": "LIABILITY", "class": 2, "category": "20"},
+            {"code": "2030", "name": "Term Deposits (Fixed)", "type": "LIABILITY", "class": 2, "category": "20"},
+            {"code": "2090", "name": "Dividends Payable", "type": "LIABILITY", "class": 2, "category": "20"},
             
-            # 3000 - Equity
+            # Category 3: Equity
             {"code": "3010", "name": "Retained Earnings", "type": "EQUITY", "class": 3, "category": "30"},
+            {"code": "3020", "name": "Current Year Profit/Loss", "type": "EQUITY", "class": 3, "category": "30"},
             
-            # 4000 - Income
-            {"code": "4110", "name": "Interest Income from Loans", "type": "INCOME", "class": 4, "category": "41"},
+            # Category 4: Income
+            {"code": "4110", "name": "Interest Income (Loans)", "type": "INCOME", "class": 4, "category": "41"},
             {"code": "4210", "name": "Account Opening Fees", "type": "INCOME", "class": 4, "category": "42"},
-            {"code": "4220", "name": "Withdrawal Fees", "type": "INCOME", "class": 4, "category": "42"},
+            {"code": "4220", "name": "Withdrawal & Transfer Fees", "type": "INCOME", "class": 4, "category": "42"},
+            {"code": "4230", "name": "Loan Late Penalties", "type": "INCOME", "class": 4, "category": "42"},
+            {"code": "4900", "name": "Cash Overage (EOD)", "type": "INCOME", "class": 4, "category": "49"},
             
-            # 5000 - Expenses
+            # Category 5: Expenses
             {"code": "5110", "name": "Staff Salaries", "type": "EXPENSE", "class": 5, "category": "51"},
-            {"code": "5210", "name": "Office Rent", "type": "EXPENSE", "class": 5, "category": "52"},
+            {"code": "5210", "name": "Office Rent & Utilities", "type": "EXPENSE", "class": 5, "category": "52"},
+            {"code": "5310", "name": "IT & Server Hosting", "type": "EXPENSE", "class": 5, "category": "53"},
+            {"code": "5900", "name": "Cash Shortage (EOD)", "type": "EXPENSE", "class": 5, "category": "59"},
+
+            # Category 8: Distributed Clearing
+            {"code": "8010", "name": "Inter-Branch Transit", "type": "ASSET", "class": 8, "category": "80"},
         ]
 
         gl_map = {}

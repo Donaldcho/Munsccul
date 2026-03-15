@@ -495,7 +495,8 @@ class DailyClosure(Base):
     __tablename__ = "daily_closures"
     
     id = Column(Integer, primary_key=True, index=True)
-    closure_date = Column(DateTime, unique=True, nullable=False, index=True)  # The day being closed (e.g., Dec 31st 00:00:00)
+    closure_date = Column(DateTime, nullable=False, index=True)  # The day being closed
+    branch_id = Column(Integer, ForeignKey("branches.id"), nullable=False)
     is_closed = Column(Boolean, default=False, nullable=False)
     
     # Audit trail
@@ -513,6 +514,7 @@ class DailyClosure(Base):
     
     __table_args__ = (
         Index('idx_daily_closure_date', 'closure_date'),
+        UniqueConstraint('closure_date', 'branch_id', name='uq_closure_date_branch'),
     )
     
     closer = relationship("User", foreign_keys=[closed_by])

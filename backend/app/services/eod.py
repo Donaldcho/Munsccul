@@ -21,30 +21,33 @@ class EODService:
         return datetime.utcnow().date()
 
     @staticmethod
-    def is_date_closed(db: Session, target_date: date) -> bool:
+    def is_date_closed(db: Session, target_date: date, branch_id: Optional[int] = None) -> bool:
         """
         Check if a specific date has been successfully closed.
         Once closed, no transactions can be posted with this Date.
         """
         closure = db.query(models.DailyClosure).filter(
-            func.date(models.DailyClosure.closure_date) == target_date
+            func.date(models.DailyClosure.closure_date) == target_date,
+            models.DailyClosure.branch_id == branch_id if branch_id else True
         ).first()
         
         return closure is not None and closure.is_closed
 
     @staticmethod
-    def get_or_create_closure_record(db: Session, target_date: date) -> models.DailyClosure:
+    def get_or_create_closure_record(db: Session, target_date: date, branch_id: Optional[int] = None) -> models.DailyClosure:
         """
         Retrieves the closure record for a specific date, creating it if it doesn't exist.
         """
         closure = db.query(models.DailyClosure).filter(
-            func.date(models.DailyClosure.closure_date) == target_date
+            func.date(models.DailyClosure.closure_date) == target_date,
+            models.DailyClosure.branch_id == branch_id if branch_id else True
         ).first()
 
         if not closure:
             # Create a pending closure record
             closure = models.DailyClosure(
                 closure_date=datetime.combine(target_date, datetime.min.time()),
+                branch_id=branch_id or 1, # Default to 1 if not provided
                 is_closed=False
             )
             db.add(closure)
@@ -111,6 +114,18 @@ class EODService:
             checks_passed = False
             messages.append(f"CRITICAL: Branch is out of balance. Δ: {abs(debits - credits)}")
 
+        # 4. THE DISTRIBUTED GUARD: Check for pending offline queue items
+        pending_syncs = db.query(models.OfflineQueue).filter(
+            models.OfflineQueue.status == models.SyncStatus.PENDING
+        )
+        if branch_id:
+            pending_syncs = pending_syncs.filter(models.OfflineQueue.branch_id == branch_id)
+        
+        pending_count = pending_syncs.count()
+        if pending_count > 0:
+            checks_passed = False
+            messages.append(f"DISTRIBUTED GUARD: {pending_count} pending transactions waiting to sync to Capital HQ.")
+
         return {
             "can_proceed": checks_passed,
             "total_debits": float(debits),
@@ -169,6 +184,52 @@ class EODService:
         }
 
     @staticmethod
+    def process_teller_variances(db: Session, target_date: date, branch_id: int, manager_id: int) -> Dict[str, Any]:
+        """
+        Iterates through teller reconciliations and auto-journals any overages/shortages.
+        """
+        from datetime import time
+        start_date = datetime.combine(target_date, time.min)
+        end_date = datetime.combine(target_date, time.max)
+        
+        reconciliations = db.query(models.TellerReconciliation).filter(
+            models.TellerReconciliation.branch_id == branch_id,
+            models.TellerReconciliation.created_at >= start_date,
+            models.TellerReconciliation.created_at <= end_date,
+            models.TellerReconciliation.status == "PENDING_REVIEW"
+        ).all()
+        
+        results = []
+        for recon in reconciliations:
+            # Get the teller's GL account code
+            teller = db.query(models.User).filter(models.User.id == recon.teller_id).first()
+            if not teller or not teller.teller_gl_account_id:
+                continue
+                
+            teller_gl = db.query(models.GLAccount).filter(models.GLAccount.id == teller.teller_gl_account_id).first()
+            if not teller_gl:
+                continue
+
+            # Record variance in GL
+            if recon.variance_amount != 0:
+                AccountingService.record_eod_cash_variance(
+                    db=db,
+                    branch_id=branch_id,
+                    expected_amount=recon.system_expected_amount,
+                    actual_amount=recon.declared_amount,
+                    teller_gl=teller_gl.account_code,
+                    reference=f"RECON-{recon.id}",
+                    created_by=manager_id
+                )
+            
+            # Auto-approve the reconciliation now that it's journaled
+            recon.status = "APPROVED"
+            recon.reviewed_by = manager_id
+            results.append({"teller": teller.full_name, "variance": float(recon.variance_amount)})
+            
+        return {"status": "success", "processed": results}
+
+    @staticmethod
     def finalize_closure(db: Session, manager_id: int, target_date: date, branch_id: int) -> models.DailyClosure:
         """
         Step 4: Final signature and lock.
@@ -183,7 +244,11 @@ class EODService:
         if not checks["can_proceed"]:
             raise ValueError(f"Final checks failed: {'; '.join(checks['messages'])}")
 
-        closure = EODService.get_or_create_closure_record(db, target_date)
+        # 1. NEW: Process Teller Variances before locking
+        EODService.process_teller_variances(db, target_date, branch_id, manager_id)
+
+        # 2. Get or create closure record
+        closure = EODService.get_or_create_closure_record(db, target_date, branch_id)
         
         # Mark as closed
         closure.is_closed = True
@@ -194,6 +259,25 @@ class EODService:
         
         # Lock the branch
         branch.status = models.BranchStatus.CLOSED
+        
+        # 5. Queue the Closure Report itself to sync to Capital HQ!
+        import json
+        closure_payload = {
+            "branch_id": branch_id,
+            "closure_date": target_date.isoformat(),
+            "total_debits": float(closure.total_debits),
+            "total_credits": float(closure.total_credits),
+            "status": "CLOSED"
+        }
+        
+        outbox_entry = models.OfflineQueue(
+            transaction_type="EOD_CLOSURE",
+            payload=json.dumps(closure_payload),
+            branch_id=branch_id,
+            created_by=manager_id,
+            status=models.SyncStatus.PENDING
+        )
+        db.add(outbox_entry)
         
         db.commit()
         db.refresh(closure)
