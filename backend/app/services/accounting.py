@@ -37,7 +37,15 @@ class AccountingService:
         now = transaction_date or datetime.utcnow()
         
         # 0. EOD Immutability Check
-        if EODService.is_date_closed(db, now.date()):
+        is_closed = EODService.is_date_closed(db, now.date())
+        # print(f"DEBUG: Checking if {now.date()} is closed: {is_closed}")
+        # Let's inspect the DB directly if it's closed
+        if is_closed:
+            closure_count = db.query(models.DailyClosure).count()
+            all_closures = db.query(models.DailyClosure).all()
+            print(f"DEBUG ERROR: Date {now.date()} is closed! Closure count in DB: {closure_count}")
+            for c in all_closures:
+                 print(f"  - Closure: date={c.closure_date}, branch={c.branch_id}, is_closed={c.is_closed}")
             raise ValueError(f"Cannot post transactions: The date {now.date()} has been closed.")
 
         # 1. Determine GL Accounts if not provided directly

@@ -26,11 +26,14 @@ class EODService:
         Check if a specific date has been successfully closed.
         Once closed, no transactions can be posted with this Date.
         """
-        closure = db.query(models.DailyClosure).filter(
-            func.date(models.DailyClosure.closure_date) == target_date,
-            models.DailyClosure.branch_id == branch_id if branch_id else True
-        ).first()
+        query = db.query(models.DailyClosure).filter(
+            func.date(models.DailyClosure.closure_date) == target_date
+        )
         
+        if branch_id:
+            query = query.filter(models.DailyClosure.branch_id == branch_id)
+            
+        closure = query.first()
         return closure is not None and closure.is_closed
 
     @staticmethod

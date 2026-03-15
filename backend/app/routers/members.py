@@ -85,10 +85,12 @@ async def create_member(
         account_number=generate_account_number(),
         member_id=new_member.id,
         account_type=models.AccountType.SHARES,
+        account_class=2,
+        account_category="20",
         balance=0.0,
         available_balance=0.0,
-        currency="XAF",
-        is_active=True
+        is_active=True,
+        opened_by=current_user.id
     )
     db.add(shares_acc)
     
@@ -96,10 +98,12 @@ async def create_member(
         account_number=generate_account_number(),
         member_id=new_member.id,
         account_type=models.AccountType.SAVINGS,
+        account_class=5,
+        account_category="52",
         balance=0.0,
         available_balance=0.0,
-        currency="XAF",
-        is_active=True
+        is_active=True,
+        opened_by=current_user.id
     )
     db.add(savings_acc)
     db.commit()

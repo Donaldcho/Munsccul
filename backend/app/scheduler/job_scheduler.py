@@ -430,11 +430,26 @@ class SchedulerService:
         }
         self._initialized = True
     
+    @property
+    def running(self) -> bool:
+        """Check if the scheduler is running"""
+        return self.scheduler.running
+
     def start(self):
         """Start the scheduler"""
         self.scheduler.start()
         print("Scheduler started")
     
+    def pause(self):
+        """Pause all jobs"""
+        self.scheduler.pause()
+        print("Scheduler paused")
+
+    def resume(self):
+        """Resume all jobs"""
+        self.scheduler.resume()
+        print("Scheduler resumed")
+
     def shutdown(self):
         """Shutdown the scheduler"""
         self.scheduler.shutdown()

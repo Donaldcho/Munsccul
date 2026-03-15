@@ -1,8 +1,8 @@
 import axios from 'axios'
 import { useAuthStore } from '../stores/authStore'
 
-// Smart Njangi has its own backend on port 8081
-const NJANGI_API_URL = 'http://localhost:8081/api/v1'
+// Smart Njangi uses the same backend as the main app
+const NJANGI_API_URL = import.meta.env.VITE_API_URL || '/api/v1'
 
 const njangiAxios = axios.create({
     baseURL: NJANGI_API_URL,

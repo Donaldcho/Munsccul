@@ -406,7 +406,7 @@ async def sync_member_accounts_to_gl(
             models.GLAccount, models.GLJournalEntry.gl_account_id == models.GLAccount.id
         ).filter(
             models.GLAccount.account_code == credit_gl,
-            models.GLJournalEntry.reference.like(f"%{acc.account_number}%")
+            models.GLJournalEntry.transaction_id.like(f"%{acc.account_number}%")
         ).first()
         
         if existing_gl:
