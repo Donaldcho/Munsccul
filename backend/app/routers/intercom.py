@@ -86,6 +86,10 @@ class IntercomConnectionManager:
         else:
             await self.redis_client.publish(f"intercom_{msg_dict['receiver_id']}", json.dumps(msg_dict))
 
+    async def publish_raw(self, user_id: int, data: dict):
+        """Publish raw JSON data to a specific user's channel"""
+        await self.redis_client.publish(f"intercom_{user_id}", json.dumps(data))
+
 manager = IntercomConnectionManager()
 
 @router.websocket("/ws/{user_id}")
@@ -93,10 +97,31 @@ async def intercom_websocket(websocket: WebSocket, user_id: int):
     await manager.connect(websocket, user_id)
     try:
         while True:
-            # We don't necessarily expect messages from frontend via WS, 
-            # as saving to DB requires HTTP POST for cleaner WORM transaction logging.
-            # But we can listen to simple keepalive messages
-            _ = await websocket.receive_text()
+            # Handle incoming messages from the frontend
+            try:
+                data = await websocket.receive_json()
+                
+                # Handle Voice Call Signaling
+                if data.get("type") == "VOICE_SIGNAL":
+                    receiver_id = data.get("receiver_id")
+                    if receiver_id:
+                        await manager.publish_raw(receiver_id, {
+                            "type": "VOICE_SIGNAL",
+                            "sender_id": user_id,
+                            "signal": data.get("signal"),
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                
+                # Keepalive/Ping
+                elif data.get("type") == "PING":
+                    await websocket.send_json({"type": "PONG", "timestamp": datetime.utcnow().isoformat()})
+
+            except json.JSONDecodeError:
+                # Ignore non-JSON messages (like simple keepalive strings)
+                continue
+            except Exception as e:
+                logger.error(f"WS Message Error for user {user_id}: {e}")
+                break
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id)
 

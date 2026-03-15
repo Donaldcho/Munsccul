@@ -18,6 +18,7 @@ from app.auth import (
     generate_transaction_ref,
     check_four_eyes_principle
 )
+from app.services.policies import PolicyService
 from app.audit import AuditLogger
 from app import models, schemas
 from app.services.accounting import AccountingService
@@ -90,7 +91,7 @@ def create_double_entry_transaction(
     Create a transaction with double-entry bookkeeping (OHADA compliant)
     """
     # Calculate new balance
-    if transaction_type in [models.TransactionType.DEPOSIT, models.TransactionType.LOAN_REPAYMENT]:
+    if transaction_type in [models.TransactionType.DEPOSIT, models.TransactionType.LOAN_REPAYMENT, models.TransactionType.SHARE_PURCHASE]:
         new_balance = account.balance + amount
     elif transaction_type in [models.TransactionType.WITHDRAWAL, models.TransactionType.TRANSFER]:
         if account.available_balance < amount:
@@ -99,10 +100,13 @@ def create_double_entry_transaction(
                 detail="Insufficient funds"
             )
         new_balance = account.balance - amount
+    elif transaction_type in [models.TransactionType.ENTRANCE_FEE]:
+        # Entrance fees paid in cash during onboarding don't affect the attached account's balance
+        new_balance = account.balance
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid transaction type"
+            detail=f"Invalid transaction type for double entry setup: {transaction_type}"
         )
     
     # Create transaction record
@@ -171,8 +175,18 @@ async def deposit(
     # Get account
     account = get_account_or_404(db, deposit_data.account_id)
     
-    # COBAC C9: CTR — Flag large cash transactions for AML compliance
-    if float(deposit_data.amount) >= settings.CTR_THRESHOLD:
+    # Policy Resolution: Dynamic Share Price
+    share_price = PolicyService.get_share_price(db)
+    if account.account_type == models.AccountType.SHARES:
+        if deposit_data.amount % Decimal(str(share_price)) != 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Share deposits must be in multiples of the share price ({share_price:,.0f} FCFA)."
+            )
+    
+    # Policy Resolution: Dynamic CTR Threshold
+    ctr_threshold = PolicyService.get_ctr_threshold(db)
+    if float(deposit_data.amount) >= ctr_threshold:
         # Force manager approval for large deposits
         pass  # Will be caught by four-eyes principle below with CTR flag
     
@@ -187,13 +201,18 @@ async def deposit(
         if teller_gl:
             teller_gl_code = teller_gl.account_code
 
+    # Determine Credit GL (2010 for Savings, 2020 for Shares)
+    credit_gl_code = "2010"
+    if account.account_type == models.AccountType.SHARES:
+        credit_gl_code = "2020"
+
     transaction = create_double_entry_transaction(
         db=db,
         account=account,
         transaction_type=models.TransactionType.DEPOSIT,
         amount=deposit_data.amount,
         debit_account_code=teller_gl_code,
-        credit_account_code="2010", # Member Savings Account (Consolidated GL)
+        credit_account_code=credit_gl_code,
         description=deposit_data.description or "Cash deposit",
         created_by=current_user.id,
         payment_channel=models.PaymentChannel(deposit_data.payment_channel.value),
@@ -273,6 +292,158 @@ async def deposit(
     return schemas.TransactionResponse.model_validate(transaction)
 
 
+@router.post("/purchase-shares", response_model=schemas.TransactionResponse)
+async def purchase_shares(
+    request: Request,
+    deposit_data: schemas.DepositRequest,
+    current_user: models.User = Depends(require_teller),
+    db: Session = Depends(get_db)
+):
+    """
+    Process a share purchase (Social Capital Registration)
+    
+    - Validates account type is SHARES
+    - Enforces multiples of share price
+    - Credits GL 2020 (Social Capital)
+    """
+    # Get account
+    account = get_account_or_404(db, deposit_data.account_id)
+    
+    # 1. Validate Account Type
+    if account.account_type != models.AccountType.SHARES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The selected account is not a Social Capital (Shares) account."
+        )
+        
+    # 2. Validate Multiples of Share Price
+    share_price = PolicyService.get_share_price(db)
+    if deposit_data.amount % Decimal(str(share_price)) != 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Share purchases must be in multiples of the share unit price ({share_price:,.0f} FCFA)."
+        )
+
+    # Determine Credit GL (Explicitly 2020 for Social Capital)
+    credit_gl_code = "2020"
+    
+    # Get Teller GL
+    teller_gl_code = "1010" 
+    if current_user.teller_gl_account_id:
+        teller_gl = db.query(models.GLAccount).filter(models.GLAccount.id == current_user.teller_gl_account_id).first()
+        if teller_gl:
+            teller_gl_code = teller_gl.account_code
+
+    # Create transaction
+    transaction = create_double_entry_transaction(
+        db=db,
+        account=account,
+        transaction_type=models.TransactionType.SHARE_PURCHASE,
+        amount=deposit_data.amount,
+        debit_account_code=teller_gl_code,
+        credit_account_code=credit_gl_code,
+        description=deposit_data.description or "Purchase of Social Capital Shares",
+        created_by=current_user.id,
+        payment_channel=models.PaymentChannel(deposit_data.payment_channel.value),
+        purpose="SHARE_CAPITAL"
+    )
+
+    db.commit()
+    db.refresh(transaction)
+    
+    # Log transaction
+    audit = AuditLogger(db, current_user, request)
+    audit.log(
+        action="SHARE_PURCHASE",
+        entity_type="Transaction",
+        entity_id=transaction.transaction_ref,
+        description=f"Recorded share purchase of {deposit_data.amount} for member {account.member_id}"
+    )
+    
+    return transaction
+
+
+@router.post("/onboard-payment", response_model=schemas.TransactionResponse)
+async def onboard_payment(
+    request: Request,
+    data: schemas.OnboardPaymentRequest,
+    current_user: models.User = Depends(require_teller),
+    db: Session = Depends(get_db)
+):
+    """
+    Onboard a new member with their first payment.
+    - Credits 2020 (Shares) with shares_amount
+    - Credits 4210 (Revenue) with fee_amount
+    - Debits Teller Cash (1020 or configured)
+    """
+    # 1. Verify Member exists and has a SHARES account
+    member = db.query(models.Member).filter(models.Member.id == data.member_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+        
+    shares_account = db.query(models.Account).filter(
+        models.Account.member_id == member.id,
+        models.Account.account_type == models.AccountType.SHARES,
+        models.Account.is_active == True
+    ).first()
+    
+    if not shares_account:
+        raise HTTPException(status_code=400, detail="Member has no active Shares account")
+
+    # 2. Get Teller GL
+    teller_gl_code = "1010" 
+    if current_user.teller_gl_account_id:
+        teller_gl = db.query(models.GLAccount).filter(models.GLAccount.id == current_user.teller_gl_account_id).first()
+        if teller_gl:
+            teller_gl_code = teller_gl.account_code
+
+    # 3. Process Share Purchase (GL 2020)
+    share_tx = create_double_entry_transaction(
+        db=db,
+        account=shares_account,
+        transaction_type=models.TransactionType.SHARE_PURCHASE,
+        amount=data.shares_amount,
+        debit_account_code=teller_gl_code,
+        credit_account_code="2020",
+        description=data.description or f"Initial Share Purchase for {member.member_id}",
+        created_by=current_user.id,
+        payment_channel=models.PaymentChannel(data.payment_channel.value),
+        purpose="SHARE_CAPITAL"
+    )
+
+    # 4. Process Entrance Fee (GL 4210)
+    fee_ref = f"FEE-ONB-{share_tx.transaction_ref}"
+    
+    # We must create a Transaction so it appears in Daily Dashboards/Reports
+    fee_tx = create_double_entry_transaction(
+        db=db,
+        account=shares_account, # Attach it to the shares account for tracking
+        transaction_type=models.TransactionType.ENTRANCE_FEE,
+        amount=data.fee_amount,
+        debit_account_code=teller_gl_code,
+        credit_account_code="4210",
+        description=f"Account Opening Fee: {member.member_id}",
+        created_by=current_user.id,
+        payment_channel=models.PaymentChannel(data.payment_channel.value),
+        purpose="ENTRANCE_FEE",
+        external_reference=fee_ref
+    )
+
+    db.commit()
+    db.refresh(share_tx)
+    
+    # Log action
+    audit = AuditLogger(db, current_user, request)
+    audit.log(
+        action="MEMBER_ONBOARD_PAYMENT",
+        entity_type="Transaction",
+        entity_id=share_tx.transaction_ref,
+        description=f"Initial onboarding payment for {member.member_id}: {data.shares_amount} Shares + {data.fee_amount} Fee"
+    )
+    
+    return share_tx
+
+
 @router.post("/withdrawal", response_model=schemas.TransactionResponse)
 async def withdrawal(
     request: Request,
@@ -337,21 +508,23 @@ async def withdrawal(
         )
     
     # COBAC C5: Check guarantor liens + minimum balance
+    fee_amount = Decimal(str(settings.WITHDRAWAL_FEE))
+    total_required = Decimal(str(withdrawal_data.amount)) + fee_amount
+    
     available = get_available_balance(db, account, account.member_id)
-    if Decimal(str(withdrawal_data.amount)) > available:
+    if total_required > available:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "cobac_code": "C4/C5",
-                "title": "Insufficient Available Balance",
-                "message": f"Your available balance is {available:,.0f} FCFA, but you requested {withdrawal_data.amount:,.0f} FCFA.",
-                "suggestion": f"The available balance accounts for the minimum operating balance and any guarantor liens. Please reduce the withdrawal amount to {available:,.0f} FCFA or less."
+                "title": "Insufficient Available Balance (incl. Fee)",
+                "message": f"Your available balance is {available:,.0f} FCFA. Total required (withdrawal + fee) is {total_required:,.0f} FCFA.",
+                "suggestion": f"Please reduce the withdrawal amount. Standard fee: {fee_amount:,.0f} FCFA."
             }
         )
     
     # COBAC C9: CTR — Flag large cash transactions for AML (ANIF)
     if float(withdrawal_data.amount) >= settings.CTR_THRESHOLD:
-        # Log CTR alert
         audit_ctr = AuditLogger(db, current_user, request)
         audit_ctr.log(
             action="CTR_ALERT",
@@ -363,15 +536,15 @@ async def withdrawal(
     
     # ========== END COBAC CHECKS ==========
     
-    # Check minimum balance (original check — kept as fallback)
-    new_balance = account.balance - withdrawal_data.amount
+    # Check minimum balance (fallback guard)
+    new_balance = account.balance - total_required
     if new_balance < account.minimum_balance:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Withdrawal would violate minimum balance requirement of {account.minimum_balance} FCFA"
+            detail=f"Withdrawal (+ fee) would violate minimum balance requirement of {account.minimum_balance} FCFA"
         )
     
-    # Create transaction with double-entry
+    # Create main transaction with double-entry
     # Debit: Member's Savings Account
     # Credit: Teller's Cash Drawer GL
     
@@ -382,12 +555,17 @@ async def withdrawal(
         if teller_gl:
             teller_gl_code = teller_gl.account_code
 
+    # Determine Debit GL (2010 for Savings, 2020 for Shares)
+    debit_gl_code = "2010"
+    if account.account_type == models.AccountType.SHARES:
+        debit_gl_code = "2020"
+
     transaction = create_double_entry_transaction(
         db=db,
         account=account,
         transaction_type=models.TransactionType.WITHDRAWAL,
         amount=withdrawal_data.amount,
-        debit_account_code="2010",  # Member Savings Account
+        debit_account_code=debit_gl_code,
         credit_account_code=teller_gl_code,
         description=withdrawal_data.description or "Cash withdrawal",
         created_by=current_user.id,
@@ -397,6 +575,43 @@ async def withdrawal(
         comments=withdrawal_data.comments
     )
     
+    # Automated COBAC Journalization: Withdrawal Fee
+    # Debit: Member Savings (2010)
+    # Credit: Withdrawal Fees (4220)
+    if fee_amount > 0:
+        # Create a separate transaction record for the fee to keep ledger clear
+        fee_tx = models.Transaction(
+            transaction_ref=f"FEE-WTH-{transaction.transaction_ref}",
+            account_id=account.id,
+            transaction_type=models.TransactionType.WITHDRAWAL, # Or a specific FEE type if exists
+            amount=fee_amount,
+            currency="XAF",
+            debit_account=account.account_number,
+            credit_account="4220",
+            balance_after=account.balance - fee_amount,
+            description=f"Withdrawal Fee - {transaction.transaction_ref}",
+            created_by=current_user.id,
+            created_at=datetime.utcnow(),
+            sync_status=models.SyncStatus.SYNCED
+        )
+        db.add(fee_tx)
+        
+        # Update account balance for fee
+        account.balance -= fee_amount
+        account.available_balance -= fee_amount
+        
+        # GL Entry for Fee
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=fee_tx.transaction_ref,
+            transaction_type="WITHDRAWAL_FEE",
+            amount=fee_amount,
+            description=f"Withdrawal Fee: {account.account_number} -> GL 4220",
+            created_by=current_user.id,
+            debit_gl_code=debit_gl_code,
+            credit_gl_code="4220"
+        )
+
     # Check if approval required (Four-Eyes Principle)
     requires_approval = check_four_eyes_principle(
         db, float(withdrawal_data.amount), current_user.id
@@ -496,14 +711,18 @@ async def transfer(
             detail=f"Transfer would violate minimum balance requirement"
         )
     
+    # Determine dynamic GL codes
+    from_gl = "2010" if from_account.account_type != models.AccountType.SHARES else "2020"
+    to_gl = "2010" if to_account.account_type != models.AccountType.SHARES else "2020"
+
     # Create transaction for source account (debit)
     transaction = create_double_entry_transaction(
         db=db,
         account=from_account,
         transaction_type=models.TransactionType.TRANSFER,
         amount=transfer_data.amount,
-        debit_account_code="2010", # Member Savings
-        credit_account_code="2010", # Member Savings
+        debit_account_code=from_gl,
+        credit_account_code=to_gl,
         description=transfer_data.description or f"Transfer to {to_account.account_number}",
         created_by=current_user.id,
         destination_account=to_account

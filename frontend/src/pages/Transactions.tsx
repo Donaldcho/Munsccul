@@ -3,7 +3,8 @@ import {
   ArrowDownCircleIcon,
   ArrowUpCircleIcon,
   ArrowsRightLeftIcon,
-  CheckCircleIcon
+  CheckCircleIcon,
+  CreditCardIcon
 } from '@heroicons/react/24/outline'
 import { transactionsApi, mobileMoneyApi } from '../services/api'
 import { formatCurrency, formatDateTime, formatTransactionRef } from '../utils/formatters'
@@ -131,6 +132,8 @@ export default function Transactions() {
         return <ArrowUpCircleIcon className="h-6 w-6 text-red-500" />
       case 'transfer':
         return <ArrowsRightLeftIcon className="h-6 w-6 text-blue-500" />
+      case 'SHARE_PURCHASE':
+        return <CreditCardIcon className="h-6 w-6 text-purple-600" />
       default:
         return <CheckCircleIcon className="h-6 w-6 text-gray-500" />
     }
@@ -204,7 +207,7 @@ export default function Transactions() {
                         <span className="ml-2 capitalize text-gray-900 dark:text-slate-200">{transaction.transaction_type}</span>
                       </div>
                     </td>
-                    <td className={`font-medium ${transaction.transaction_type === 'deposit' ? 'text-green-600 dark:text-green-400' :
+                    <td className={`font-medium ${transaction.transaction_type === 'deposit' || transaction.transaction_type === 'SHARE_PURCHASE' ? 'text-green-600 dark:text-green-400' :
                       transaction.transaction_type === 'withdrawal' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-slate-200'
                       }`}>
                       {transaction.transaction_type === 'withdrawal' ? '-' : '+'}

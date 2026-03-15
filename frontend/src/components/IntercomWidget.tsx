@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { ChatBubbleLeftRightIcon, XMarkIcon, PaperAirplaneIcon, MegaphoneIcon, LinkIcon, VideoCameraIcon } from '@heroicons/react/24/outline'
+import { ChatBubbleLeftRightIcon, XMarkIcon, PaperAirplaneIcon, MegaphoneIcon, LinkIcon, VideoCameraIcon, PhoneIcon, PhoneXMarkIcon } from '@heroicons/react/24/outline'
 import { intercomApi, usersApi } from '../services/api'
 import { useAuthStore } from '../stores/authStore'
+import { useVoiceCall, VoiceSignal } from '../hooks/useVoiceCall'
 import toast from 'react-hot-toast'
 
 interface IntercomMessage {
@@ -45,6 +46,17 @@ export default function IntercomWidget() {
     const ws = useRef<WebSocket | null>(null)
     const messagesEndRef = useRef<HTMLDivElement>(null)
 
+    const audioRef = useRef<HTMLAudioElement>(null)
+
+    const {
+        isCalling, isRinging, isConnected, remoteUser: callUser, remoteStream,
+        startCall, acceptCall, endCall, handleSignal
+    } = useVoiceCall(user!.id, (payload) => {
+        if (ws.current?.readyState === WebSocket.OPEN) {
+            ws.current.send(JSON.stringify(payload))
+        }
+    })
+
     useEffect(() => {
         if (user) {
             setupWebSocket()
@@ -68,6 +80,18 @@ export default function IntercomWidget() {
             scrollToBottom()
         }
     }, [isOpen, messages])
+
+    useEffect(() => {
+        if (isRinging) {
+            setIsOpen(true)
+        }
+    }, [isRinging])
+
+    useEffect(() => {
+        if (audioRef.current && remoteStream) {
+            audioRef.current.srcObject = remoteStream
+        }
+    }, [remoteStream])
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -99,7 +123,15 @@ export default function IntercomWidget() {
         ws.current = new WebSocket(url)
 
         ws.current.onmessage = (event) => {
-            const newMsg: IntercomMessage = JSON.parse(event.data)
+            const data = JSON.parse(event.data)
+
+            // Handle Voice Signaling specifically
+            if (data.type === 'VOICE_SIGNAL') {
+                handleSignal(data as VoiceSignal)
+                return
+            }
+
+            const newMsg: IntercomMessage = data
 
             setMessages(prev => {
                 // Deduplicate echoes
@@ -140,6 +172,9 @@ export default function IntercomWidget() {
 
     return (
         <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end pointer-events-none">
+            {/* Hidden Audio Player for Voice Calls */}
+            <audio ref={audioRef} autoPlay className="hidden" />
+
             {/* The Chat Panel */}
             <div
                 className={`transition-all duration-300 ease-in-out transform origin-bottom-right pointer-events-auto
@@ -205,10 +240,67 @@ export default function IntercomWidget() {
                                     {selectedUser ? selectedUser.role.replace('_', ' ') : 'Visible to all active staff'}
                                 </p>
                             </div>
-                            <button onClick={() => setIsOpen(false)} className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-                                <XMarkIcon className="h-5 w-5" />
-                            </button>
+                            <div className="flex items-center gap-1">
+                                {selectedUser && !isCalling && !isConnected && (
+                                    <button
+                                        onClick={() => startCall(selectedUser)}
+                                        className="p-1 px-2 text-indigo-600 hover:bg-indigo-50 rounded-lg flex items-center gap-1 text-xs font-bold transition-colors"
+                                        title="Start Secure Voice Call"
+                                    >
+                                        <PhoneIcon className="h-4 w-4" />
+                                        Call
+                                    </button>
+                                )}
+                                <button onClick={() => setIsOpen(false)} className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+                                    <XMarkIcon className="h-5 w-5" />
+                                </button>
+                            </div>
                         </div>
+
+                        {/* Voice Call Signaling Overlay */}
+                        {(isCalling || isRinging || isConnected) && (
+                            <div className="relative z-20 pointer-events-auto">
+                                <div className="absolute inset-x-0 top-0 m-3 bg-indigo-600 text-white rounded-2xl shadow-xl p-4 flex flex-col items-center gap-3 animate-in slide-in-from-top duration-300">
+                                    <div className="flex flex-col items-center">
+                                        <div className="h-10 w-10 rounded-full bg-white/20 flex items-center justify-center mb-1 animate-pulse">
+                                            <PhoneIcon className="h-5 w-5" />
+                                        </div>
+                                        <p className="text-sm font-bold">{callUser?.full_name || 'Staff Member'}</p>
+                                        <p className="text-[10px] uppercase tracking-wider opacity-80">
+                                            {isRinging ? 'Incoming Secure Call' : isCalling ? 'Connecting...' : 'Secure Connection Active'}
+                                        </p>
+                                    </div>
+                                    <div className="flex gap-4">
+                                        {isRinging ? (
+                                            <>
+                                                <button
+                                                    onClick={acceptCall}
+                                                    className="h-10 w-10 bg-green-500 rounded-full flex items-center justify-center hover:bg-green-600 transition-colors shadow-lg"
+                                                    title="Accept"
+                                                >
+                                                    <PhoneIcon className="h-5 w-5" />
+                                                </button>
+                                                <button
+                                                    onClick={endCall}
+                                                    className="h-10 w-10 bg-red-500 rounded-full flex items-center justify-center hover:bg-red-600 transition-colors shadow-lg"
+                                                    title="Decline"
+                                                >
+                                                    <PhoneXMarkIcon className="h-5 w-5" />
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <button
+                                                onClick={endCall}
+                                                className="px-4 py-2 bg-red-500 rounded-full flex items-center gap-2 hover:bg-red-600 transition-colors text-xs font-bold shadow-lg"
+                                            >
+                                                <PhoneXMarkIcon className="h-4 w-4" />
+                                                End Call
+                                            </button>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         {/* Messages Area */}
                         <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 dark:bg-slate-950/50">

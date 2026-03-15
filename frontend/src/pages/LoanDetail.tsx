@@ -9,6 +9,7 @@ import {
     XCircleIcon,
     ArrowPathIcon,
     PaperAirplaneIcon,
+    SparklesIcon,
 } from '@heroicons/react/24/outline'
 import { loansApi } from '../services/api'
 import { useAuthStore } from '../stores/authStore'
@@ -347,6 +348,23 @@ export default function LoanDetail() {
                                     )}
                                 </dd>
                             </div>
+                            {loan.ai_risk_score !== undefined && loan.ai_risk_score !== null && (
+                                <div>
+                                    <dt className="text-sm font-medium text-amber-600 dark:text-amber-500 flex items-center">
+                                        <SparklesIcon className="w-5 h-5 mr-1" />
+                                        AI Default Risk
+                                    </dt>
+                                    <dd className="mt-1 text-lg font-bold">
+                                        {loan.ai_risk_score > 0.8 ? (
+                                            <span className="text-red-600 dark:text-red-400">{Math.round(loan.ai_risk_score * 100)}% (High Danger)</span>
+                                        ) : loan.ai_risk_score < 0.3 ? (
+                                            <span className="text-green-600 dark:text-green-400">{Math.round(loan.ai_risk_score * 100)}% (Low Risk)</span>
+                                        ) : (
+                                            <span className="text-yellow-600 dark:text-yellow-400">{Math.round(loan.ai_risk_score * 100)}% (Moderate)</span>
+                                        )}
+                                    </dd>
+                                </div>
+                            )}
                             {(loan.status === 'ACTIVE' || loan.status === 'DELINQUENT') && (
                                 <>
                                     <div>

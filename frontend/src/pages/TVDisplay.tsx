@@ -210,7 +210,7 @@ export default function TVDisplay() {
                     ) : (
                         <div className="text-center">
                             <img src="/logo.png" alt="MUNSCCUL" className="h-48 mx-auto mb-12 opacity-50 grayscale" />
-                            <h2 className="text-6xl font-black text-slate-700">WELCOME TO MUNSCCUL</h2>
+                            <h2 className="text-6xl font-black text-slate-700">WELCOME TO MUNIMUN SEAMEN'S COOPERATIVE</h2>
                         </div>
                     )}
                 </div>

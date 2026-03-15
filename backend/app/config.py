@@ -58,14 +58,16 @@ class Settings(BaseSettings):
     FOUR_EYES_THRESHOLD: float = 500000.0  # FCFA - requires manager approval
     
     # COBAC Credit Union Constraints
-    MIN_SHARE_CAPITAL: float = 5000.0          # Minimum shares to be "active" (5 shares × 1,000 XAF)
-    SHARE_PRICE: float = 1000.0                # Price per share
+    MIN_SHARE_CAPITAL: float = 10000.0         # Minimum shares to be "active" (5 shares × 2,000 XAF)
+    SHARE_PRICE: float = 2000.0                # Price per share
     SAVINGS_MULTIPLIER: int = 3                # Max loan = 3× (shares + savings)
     DEBT_SERVICE_RATIO: float = 0.33           # Monthly repayment ≤ 1/3 of salary
     COOLING_OFF_DAYS: int = 90                 # New members must save 3 months before loan
     CTR_THRESHOLD: float = 5000000.0           # AML cash threshold reporting (ANIF)
     DORMANCY_MONTHS: int = 6                   # Months without member activity → dormant
     MIN_SAVINGS_OPERATING_BALANCE: float = 1000.0  # Default min balance for savings accounts
+    ACCOUNT_OPENING_FEE: float = 1000.0           # Standard fee for new accounts
+    WITHDRAWAL_FEE: float = 100.0                 # Standard fee per withdrawal
     
     # Loan Settings
     DEFAULT_DELINQUENCY_DAYS: int = 30

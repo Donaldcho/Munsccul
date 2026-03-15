@@ -85,7 +85,7 @@ export default function Kiosk() {
 
             <div className="z-10 text-center mb-12">
                 <img src="/logo.png" alt="MUNSCCUL" className="h-20 mx-auto mb-6 drop-shadow-lg" />
-                <h1 className="text-5xl font-black mb-2 tracking-tight">Welcome to MUNSCCUL</h1>
+                <h1 className="text-5xl font-black mb-2 tracking-tight">Welcome to MUNIMUN</h1>
                 <p className="text-xl text-primary-200">Please select your service to get a ticket</p>
             </div>
 
@@ -141,7 +141,7 @@ export default function Kiosk() {
             </div>
 
             <p className="mt-12 text-primary-300/50 text-sm font-medium z-10">
-                Branch Customer Flow Solution &copy; MUNSCCUL 2026
+                Branch Customer Flow Solution &copy; Munimun Seamen's Cooperative 2026
             </p>
         </div>
     )

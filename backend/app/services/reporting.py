@@ -62,22 +62,23 @@ class ReportingService:
             # Closing Balance: Opening (signed) + today's Debit - today's Credit
             closing = opening + debit - credit
 
-            # Only include accounts with activity or a balance
-            if opening != 0 or debit != 0 or credit != 0:
-                # balance_type tells consumers whether this account has a net DEBIT or CREDIT balance
-                balance_type = "DEBIT" if closing >= 0 else "CREDIT"
-                trial_balance.append({
-                    "account_code": row.account_code,
-                    "account_name": row.account_name,
-                    "account_type": row.account_type,
-                    "opening_balance": opening,
-                    "debit": debit,
-                    "credit": credit,
-                    "closing_balance": closing,
-                    # These fields are required by generate_balance_sheet & net income calc:
-                    "balance": abs(closing),
-                    "balance_type": balance_type
-                })
+            # balance_type tells consumers whether this account has a net DEBIT or CREDIT balance
+            balance_type = "DEBIT" if closing >= 0 else "CREDIT"
+            
+            # COBAC: Trial Balance should show the full structure (Audit trail)
+            # Include if there is any movement or if it's a DETAIL account (leaf node)
+            trial_balance.append({
+                "account_code": row.account_code,
+                "account_name": row.account_name,
+                "account_type": row.account_type,
+                "opening_balance": opening,
+                "debit": debit,
+                "credit": credit,
+                "closing_balance": closing,
+                # These fields are required by generate_balance_sheet & net income calc:
+                "balance": abs(closing),
+                "balance_type": balance_type
+            })
 
         # Compute totals row (a valid trial balance has total_debit == total_credit)
         total_opening = sum(r["opening_balance"] for r in trial_balance)
@@ -399,6 +400,8 @@ class ReportingService:
             "CURRENT ACT": "INFLOWS",
             "SHARE CAPITAL": "INFLOWS",
             "ENTRANCE FEES": "INFLOWS",
+            "ENTRANCE FEE": "INFLOWS",
+            "ACCOUNT OPENING FEE": "INFLOWS",
             "SOLIDARITY FUND": "INFLOWS",
             "BUILDING CONTRIBUTION": "INFLOWS",
             "LOAN REPAYMENT": "INFLOWS",

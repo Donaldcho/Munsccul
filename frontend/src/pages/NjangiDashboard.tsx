@@ -43,7 +43,7 @@ export default function NjangiDashboard() {
                 const [ledgerRes, insightsRes, readinessRes] = await Promise.all([
                     njangiApi.getGroupLedger(group.id),
                     njangiApi.getGroupInsights(group.id),
-                    njangiApi.getReadiness(1) // Placeholder: Hardcoded Member ID for demo
+                    njangiApi.getReadiness(group.president_id || 1) // Dynamic member ID
                 ])
 
                 setLedger(ledgerRes.data)
@@ -95,6 +95,33 @@ export default function NjangiDashboard() {
         return (
             <div className="flex items-center justify-center min-h-[60vh]">
                 <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-600"></div>
+            </div>
+        )
+    }
+
+    // Empty state: user does not belong to any Njangi group yet
+    if (groups.length === 0) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-[70vh] text-center px-4">
+                <div className="bg-indigo-100 dark:bg-indigo-900/30 rounded-full p-6 mb-6">
+                    <UsersIcon className="w-14 h-14 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-3">Smart Njangi Workspace</h1>
+                <p className="text-gray-500 dark:text-gray-400 max-w-md mb-8 leading-relaxed">
+                    You are not a member of any Njangi group yet. Ask your branch teller or Ops Manager to register your group and invite you to start building your credit score.
+                </p>
+                <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 p-6 max-w-sm w-full shadow-sm">
+                    <h3 className="font-bold text-gray-900 dark:text-white mb-3 flex items-center">
+                        <ShieldCheckIcon className="w-5 h-5 mr-2 text-indigo-500" />
+                        Why Join Njangi?
+                    </h3>
+                    <ul className="space-y-2 text-sm text-gray-600 dark:text-gray-400 text-left">
+                        <li className="flex items-start"><span className="text-indigo-400 font-bold mr-2">✓</span> Build a formal credit score through social savings</li>
+                        <li className="flex items-start"><span className="text-indigo-400 font-bold mr-2">✓</span> Access preferential loan rates at Munimun Seamen's</li>
+                        <li className="flex items-start"><span className="text-indigo-400 font-bold mr-2">✓</span> Pay dues via MTN MoMo or Orange Money</li>
+                        <li className="flex items-start"><span className="text-indigo-400 font-bold mr-2">✓</span> Real-time group ledger and AI insights</li>
+                    </ul>
+                </div>
             </div>
         )
     }
@@ -241,7 +268,7 @@ export default function NjangiDashboard() {
                             Credit Union Bridge
                         </h2>
                         <p className="text-blue-100 text-sm mb-6 leading-relaxed">
-                            Your consistent Njangi behavior is building your formal credit score at MUNSCCUL.
+                            Your consistent Njangi behavior is building your formal credit score at Munimun Seamen's Cooperative.
                         </p>
 
                         <div className="bg-white/10 rounded-xl p-4 border border-white/10 mb-6">

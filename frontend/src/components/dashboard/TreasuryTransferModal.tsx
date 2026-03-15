@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { XMarkIcon, ArrowsRightLeftIcon } from '@heroicons/react/24/outline';
-import { treasuryApi } from '../../services/api';
+import { treasuryApi, usersApi } from '../../services/api';
 import toast from 'react-hot-toast';
 
 interface TreasuryAccount {
@@ -25,17 +25,21 @@ export default function TreasuryTransferModal({ isOpen, onClose, onSuccess }: Pr
     const [amount, setAmount] = useState('');
     const [sourceId, setSourceId] = useState('');
     const [destId, setDestId] = useState('');
+    const [tellerId, setTellerId] = useState('');
     const [description, setDescription] = useState('');
+    const [tellers, setTellers] = useState<any[]>([]);
 
     useEffect(() => {
         if (isOpen) {
             fetchAccounts();
+            fetchTellers();
         } else {
             // Reset form
             setTransferType('VAULT_TO_EXTERNAL');
             setAmount('');
             setSourceId('');
             setDestId('');
+            setTellerId('');
             setDescription('');
         }
     }, [isOpen]);
@@ -49,10 +53,20 @@ export default function TreasuryTransferModal({ isOpen, onClose, onSuccess }: Pr
         }
     };
 
+    const fetchTellers = async () => {
+        try {
+            const res = await usersApi.getAll();
+            setTellers(res.data.filter((u: any) => u.role === 'TELLER'));
+        } catch (error) {
+            console.error("Failed to load tellers", error);
+        }
+    };
+
     const getSourceOptions = () => {
         if (transferType === 'VAULT_TO_EXTERNAL') return accounts.filter(a => a.account_type === 'VAULT');
         if (transferType === 'EXTERNAL_TO_DIGITAL') return accounts.filter(a => ['BANK', 'CREDIT_UNION'].includes(a.account_type));
         if (transferType === 'DIGITAL_TO_EXTERNAL') return accounts.filter(a => a.account_type === 'MOBILE_MONEY');
+        if (transferType === 'VAULT_TO_TELLER') return accounts.filter(a => a.account_type === 'VAULT');
         return accounts;
     };
 
@@ -65,7 +79,7 @@ export default function TreasuryTransferModal({ isOpen, onClose, onSuccess }: Pr
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!amount || !sourceId || !destId) {
+        if (!amount || !sourceId || (transferType !== 'VAULT_TO_TELLER' && !destId) || (transferType === 'VAULT_TO_TELLER' && !tellerId)) {
             toast.error("Please fill in all required fields");
             return;
         }
@@ -77,7 +91,8 @@ export default function TreasuryTransferModal({ isOpen, onClose, onSuccess }: Pr
                 transfer_type: transferType,
                 description: description || undefined,
                 source_treasury_id: Number(sourceId),
-                destination_treasury_id: Number(destId)
+                destination_treasury_id: destId ? Number(destId) : undefined,
+                teller_id: tellerId ? Number(tellerId) : undefined
             });
             toast.success("Transfer request submitted for approval");
             onSuccess();
@@ -96,14 +111,16 @@ export default function TreasuryTransferModal({ isOpen, onClose, onSuccess }: Pr
 
         if (sources.length === 1 && sourceId !== sources[0].id.toString()) {
             setSourceId(sources[0].id.toString());
-        } else if (!sources.find(s => s.id.toString() === sourceId)) {
-            setSourceId('');
+        } else if (sources.length > 0 && !sources.find(s => s.id.toString() === sourceId)) {
+            // Allow manual selection if multiple exist
         }
 
-        if (dests.length === 1 && destId !== dests[0].id.toString()) {
-            setDestId(dests[0].id.toString());
-        } else if (!dests.find(d => d.id.toString() === destId)) {
-            setDestId('');
+        if (transferType !== 'VAULT_TO_TELLER') {
+            if (dests.length === 1 && destId !== dests[0].id.toString()) {
+                setDestId(dests[0].id.toString());
+            } else if (dests.length > 0 && !dests.find(d => d.id.toString() === destId)) {
+                // Allow manual selection
+            }
         }
     }, [transferType, accounts]);
 
@@ -136,6 +153,7 @@ export default function TreasuryTransferModal({ isOpen, onClose, onSuccess }: Pr
                             className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-slate-900 dark:text-white font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                         >
                             <option value="VAULT_TO_EXTERNAL">Vault to External Bank (Placement)</option>
+                            <option value="VAULT_TO_TELLER">Vault to Teller Drawer (Morning Float)</option>
                             <option value="EXTERNAL_TO_DIGITAL">External Bank to Digital Wallet (MoMo Float)</option>
                             <option value="DIGITAL_TO_EXTERNAL">Digital Wallet to External Bank (Evacuation)</option>
                         </select>
@@ -156,20 +174,38 @@ export default function TreasuryTransferModal({ isOpen, onClose, onSuccess }: Pr
                                 ))}
                             </select>
                         </div>
-                        <div>
-                            <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Destination / Credit</label>
-                            <select
-                                value={destId}
-                                onChange={(e) => setDestId(e.target.value)}
-                                required
-                                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                            >
-                                <option value="">Select destination...</option>
-                                {getDestOptions().map(acc => (
-                                    <option key={acc.id} value={acc.id}>{acc.name}</option>
-                                ))}
-                            </select>
-                        </div>
+                        {transferType !== 'VAULT_TO_TELLER' && (
+                            <div>
+                                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Destination / Credit</label>
+                                <select
+                                    value={destId}
+                                    onChange={(e) => setDestId(e.target.value)}
+                                    required
+                                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                    <option value="">Select destination...</option>
+                                    {getDestOptions().map(acc => (
+                                        <option key={acc.id} value={acc.id}>{acc.name}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+                        {transferType === 'VAULT_TO_TELLER' && (
+                            <div className="col-span-1">
+                                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Destination Teller</label>
+                                <select
+                                    value={tellerId}
+                                    onChange={(e) => setTellerId(e.target.value)}
+                                    required
+                                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-slate-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                >
+                                    <option value="">Select teller...</option>
+                                    {tellers.map(t => (
+                                        <option key={t.id} value={t.id}>{t.full_name} (@{t.username})</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
                     </div>
 
                     <div>

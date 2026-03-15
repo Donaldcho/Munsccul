@@ -3,11 +3,14 @@ import { Link, useNavigate } from 'react-router-dom'
 import {
   PlusIcon,
   CreditCardIcon,
-  EyeIcon
+  EyeIcon,
+  ExclamationCircleIcon,
+  ArrowPathIcon
 } from '@heroicons/react/24/outline'
 import { accountsApi } from '../services/api'
 import { formatCurrency, formatDate } from '../utils/formatters'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '../utils/errorUtils'
 
 interface Account {
   id: number
@@ -25,6 +28,7 @@ export default function Accounts() {
   const navigate = useNavigate()
   const [accounts, setAccounts] = useState<Account[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchAccounts()
@@ -33,10 +37,12 @@ export default function Accounts() {
   const fetchAccounts = async () => {
     try {
       setIsLoading(true)
+      setLoadError(null)
       const response = await accountsApi.getAll({ limit: 100 })
       setAccounts(response.data)
-    } catch (error) {
-      toast.error('Failed to fetch accounts')
+    } catch (error: any) {
+      const msg = getErrorMessage(error, 'Unable to load accounts. Please try again.')
+      setLoadError(msg)
     } finally {
       setIsLoading(false)
     }
@@ -80,16 +86,33 @@ export default function Accounts() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-8">
-                    <div className="flex justify-center">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+                  <td colSpan={7} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-3 text-slate-400">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
+                      <p className="text-sm">Loading accounts...</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : loadError ? (
+                <tr>
+                  <td colSpan={7} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-3">
+                      <ExclamationCircleIcon className="h-10 w-10 text-amber-400" />
+                      <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Could not load accounts</p>
+                      <p className="text-xs text-slate-400">{loadError}</p>
+                      <button onClick={fetchAccounts} className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 text-sm font-medium hover:bg-primary-100 transition-colors">
+                        <ArrowPathIcon className="h-4 w-4" /> Try Again
+                      </button>
                     </div>
                   </td>
                 </tr>
               ) : accounts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-8 text-gray-500 dark:text-slate-400">
-                    No accounts found
+                  <td colSpan={7} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-2 text-slate-400">
+                      <CreditCardIcon className="h-10 w-10 text-slate-300" />
+                      <p className="text-sm">No accounts registered yet.</p>
+                    </div>
                   </td>
                 </tr>
               ) : (

@@ -44,7 +44,7 @@ export default function BoardPortalLayout({ children, activeTab, setActiveTab }:
                             <ShieldCheckIcon className="h-6 w-6 text-white" />
                         </div>
                         <div>
-                            <h1 className="text-xl font-bold tracking-tight text-white line-height-1">MUNSCCUL</h1>
+                            <h1 className="text-xl font-bold tracking-tight text-white line-height-1">Munimun Seamen's</h1>
                             <p className="text-[10px] uppercase tracking-[0.2em] text-indigo-400 font-semibold">Governance Portal</p>
                         </div>
                     </div>

@@ -111,6 +111,7 @@ require_manager = require_role(["BRANCH_MANAGER", "OPS_MANAGER"])
 require_teller = require_role(["TELLER", "BRANCH_MANAGER", "OPS_MANAGER"])
 require_credit_officer = require_role(["CREDIT_OFFICER", "BRANCH_MANAGER", "OPS_MANAGER"])
 require_auditor = require_role(["AUDITOR", "OPS_MANAGER", "SYSTEM_ADMIN"])
+require_board_member = require_role(["BOARD_MEMBER", "OPS_DIRECTOR"])
 
 def require_member_access(current_user: models.User = Depends(get_current_active_user)):
     """

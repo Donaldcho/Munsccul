@@ -21,36 +21,24 @@ export default function Dashboard() {
   const [loanStats, setLoanStats] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
 
+  const REPORTING_ROLES = ['BRANCH_MANAGER', 'AUDITOR']
+  const LOAN_STATS_ROLES = ['CREDIT_OFFICER']
+
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const promises = []
+        const role = user?.role || ''
 
-        // Fetch data based on role or fetch all for admin
-        // Fetch data based on role
-        if (['SYSTEM_ADMIN', 'BRANCH_MANAGER', 'AUDITOR'].includes(user?.role || '')) {
-          promises.push(reportsApi.getDashboard())
-          // loansApi.getStats() is not used by AdminDashboard anymore
-          // promises.push(loansApi.getStats()) 
-        } else if (user?.role === 'CREDIT_OFFICER') {
-          promises.push(loansApi.getStats())
-        } else if (['OPS_MANAGER', 'OPS_DIRECTOR', 'BOARD_MEMBER'].includes(user?.role || '')) {
-          // Manager/Director/Board fetches its own data
-        } else {
-          // Tellers might not need heavy stats, or maybe just their own
-          // For now, let's fetch basic stats to avoid errors if components expect them
-          promises.push(reportsApi.getDashboard())
+        if (REPORTING_ROLES.includes(role)) {
+          // Only managers/auditors can call this endpoint
+          const res = await reportsApi.getDashboard().catch(() => ({ data: null }))
+          setStats(res?.data ?? null)
+        } else if (LOAN_STATS_ROLES.includes(role)) {
+          const res = await loansApi.getStats().catch(() => ({ data: null }))
+          setLoanStats(res?.data ?? null)
         }
-
-        const results = await Promise.all(promises)
-
-        if (user?.role === 'CREDIT_OFFICER') {
-          setLoanStats(results[0].data)
-        } else {
-          setStats(results[0]?.data)
-          setLoanStats(results[1]?.data)
-        }
-
+        // All other roles (TELLER, OPS_MANAGER, OPS_DIRECTOR, BOARD_MEMBER, SYSTEM_ADMIN)
+        // do NOT call getDashboard — their sub-dashboards fetch their own data.
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error)
       } finally {
@@ -60,8 +48,11 @@ export default function Dashboard() {
 
     if (user) {
       fetchData()
+    } else {
+      setIsLoading(false)
     }
   }, [user])
+
 
   if (isLoading) {
     return (

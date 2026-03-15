@@ -9,8 +9,15 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app import models
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 def seed_gl_data():
-    db = SessionLocal()
+    # Local Override for dev execution
+    DATABASE_URL = "postgresql://camccul:camccul_secure_password@localhost:5434/camccul_banking"
+    engine = create_engine(DATABASE_URL)
+    SessionOverride = sessionmaker(bind=engine)
+    db = SessionOverride()
     try:
         print("Starting GL Seeding (COBAC/OHADA Standards)...")
         
@@ -20,6 +27,16 @@ def seed_gl_data():
             # 1000 - Cash and Equivalents
             {"code": "1010", "name": "Main Vault - Cash", "type": "ASSET", "class": 1, "category": "10"},
             {"code": "1020", "name": "Teller 1 Drawer", "type": "ASSET", "class": 1, "category": "10"},
+            
+            # 1030 - Commercial Bank Placements
+            {"code": "1030", "name": "Commercial Banks (General)", "type": "ASSET", "class": 1, "category": "10"},
+            {"code": "1031", "name": "Afriland First Bank", "type": "ASSET", "class": 1, "category": "10"},
+            {"code": "1032", "name": "BALICO / CCA Bank", "type": "ASSET", "class": 1, "category": "10"},
+            
+            # 1040 - Mobile Money Placements
+            {"code": "1040", "name": "Mobile Money (General)", "type": "ASSET", "class": 1, "category": "10"},
+            {"code": "1041", "name": "MTN Mobile Money Wallet", "type": "ASSET", "class": 1, "category": "10"},
+            {"code": "1042", "name": "Orange Money Wallet", "type": "ASSET", "class": 1, "category": "10"},
             
             # 1200 - Loans to Members
             {"code": "1210", "name": "Ordinary Loans Portfolio", "type": "ASSET", "class": 1, "category": "12"},

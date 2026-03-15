@@ -9,12 +9,14 @@ import {
     ExclamationTriangleIcon,
     BanknotesIcon,
     ArrowTrendingUpIcon,
-    ChartPieIcon
+    ChartPieIcon,
+    MapPinIcon
 } from '@heroicons/react/24/solid'
-import { reportsApi, loansApi } from '../../../services/api'
+import { reportsApi, opsApi, branchesApi } from '../../../services/api'
 import { formatCurrency } from '../../../utils/formatters'
 
 const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f59e0b']
+const LIQUIDITY_COLORS = ['#10b981', '#6366f1', '#f59e0b']
 
 export default function ExecutiveOverview() {
     const [stats, setStats] = useState<any>(null)
@@ -23,19 +25,31 @@ export default function ExecutiveOverview() {
     const [boardMetrics, setBoardMetrics] = useState<any>(null)
     const [loading, setLoading] = useState(true)
 
+    // Branch Distribution State
+    const [branches, setBranches] = useState<any[]>([])
+    const [selectedBranchId, setSelectedBranchId] = useState<number | null>(null)
+    const [branchLiquidity, setBranchLiquidity] = useState<any>(null)
+    const [loadingBranch, setLoadingBranch] = useState(false)
+
     useEffect(() => {
         async function fetchData() {
             try {
-                const [dashRes, liqRes, parRes, metricsRes] = await Promise.all([
+                const [dashRes, liqRes, parRes, metricsRes, branchesRes] = await Promise.all([
                     reportsApi.getDashboard(),
                     reportsApi.getCobacLiquidity('daily'),
                     reportsApi.getParReport(),
-                    reportsApi.getBoardMetrics()
+                    reportsApi.getBoardMetrics(),
+                    branchesApi.getAll()
                 ])
                 setStats(dashRes.data)
                 setLiquidity(liqRes.data)
                 setParStats(parRes.data)
                 setBoardMetrics(metricsRes.data)
+                setBranches(branchesRes.data)
+
+                if (branchesRes.data.length > 0) {
+                    setSelectedBranchId(branchesRes.data[0].id)
+                }
             } catch (err) {
                 console.error('Failed to fetch board metrics', err)
             } finally {
@@ -44,6 +58,24 @@ export default function ExecutiveOverview() {
         }
         fetchData()
     }, [])
+
+    useEffect(() => {
+        if (selectedBranchId) {
+            fetchBranchLiquidity(selectedBranchId)
+        }
+    }, [selectedBranchId])
+
+    const fetchBranchLiquidity = async (branchId: number) => {
+        try {
+            setLoadingBranch(true)
+            const res = await opsApi.getLiquidity(branchId)
+            setBranchLiquidity(res.data)
+        } catch (err) {
+            console.error('Failed to fetch branch liquidity', err)
+        } finally {
+            setLoadingBranch(false)
+        }
+    }
 
     if (loading) {
         return (
@@ -56,6 +88,12 @@ export default function ExecutiveOverview() {
     const sectorData = boardMetrics?.sector_data || []
     const branchData = boardMetrics?.branch_data || []
     const anomalies = boardMetrics?.anomalies || []
+
+    const liquidityDistributionData = branchLiquidity ? [
+        { name: 'Internal Cash', value: parseFloat(branchLiquidity.categories.find((c: any) => c.category_type === 'INTERNAL')?.total_balance || '0') },
+        { name: 'External Placements', value: parseFloat(branchLiquidity.categories.find((c: any) => c.category_type === 'EXTERNAL')?.total_balance || '0') },
+        { name: 'Digital Wallets', value: parseFloat(branchLiquidity.categories.find((c: any) => c.category_type === 'DIGITAL')?.total_balance || '0') }
+    ].filter(d => d.value > 0) : []
 
     return (
         <div className="space-y-10 animate-fade-in">
@@ -122,6 +160,10 @@ export default function ExecutiveOverview() {
                             <span className="text-xs text-slate-500 font-bold mb-1">Total Liabilities (Deposits)</span>
                             <p className="text-lg font-bold text-slate-300">{formatCurrency(stats?.accounts?.total_deposits || 0)}</p>
                         </div>
+                        <div className="mt-2 flex flex-col">
+                            <span className="text-xs text-indigo-500/80 font-bold mb-1">Stable Capital (Shares)</span>
+                            <p className="text-sm font-bold text-indigo-400">{formatCurrency(stats?.capital_adequacy?.total_shares || 0)}</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -187,6 +229,89 @@ export default function ExecutiveOverview() {
                                 <Bar dataKey="loans" name="Loan Portfolio" fill="#ec4899" radius={[4, 4, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
+                    </div>
+                </div>
+            </div>
+
+            {/* Row 3: Branch Money Distribution */}
+            <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-8 backdrop-blur-sm">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+                    <div className="flex items-center space-x-3">
+                        <MapPinIcon className="h-5 w-5 text-indigo-400" />
+                        <h3 className="text-lg font-bold text-white">Branch Money Distribution</h3>
+                    </div>
+
+                    <div className="flex items-center bg-slate-800/50 rounded-xl p-1 border border-slate-700">
+                        {branches.map(b => (
+                            <button
+                                key={b.id}
+                                onClick={() => setSelectedBranchId(b.id)}
+                                className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${selectedBranchId === b.id
+                                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20'
+                                        : 'text-slate-400 hover:text-white'
+                                    }`}
+                            >
+                                {b.name}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-center">
+                    <div className="lg:col-span-2 h-80">
+                        {loadingBranch ? (
+                            <div className="flex items-center justify-center h-full">
+                                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+                            </div>
+                        ) : liquidityDistributionData.length > 0 ? (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                    <Pie
+                                        data={liquidityDistributionData}
+                                        cx="50%"
+                                        cy="50%"
+                                        innerRadius={80}
+                                        outerRadius={120}
+                                        paddingAngle={5}
+                                        dataKey="value"
+                                    >
+                                        {liquidityDistributionData.map((_entry: any, index: number) => (
+                                            <Cell key={`cell-${index}`} fill={LIQUIDITY_COLORS[index % LIQUIDITY_COLORS.length]} />
+                                        ))}
+                                    </Pie>
+                                    <Tooltip
+                                        formatter={(value: number) => formatCurrency(value)}
+                                        contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
+                                        itemStyle={{ color: '#fff' }}
+                                    />
+                                    <Legend verticalAlign="bottom" height={36} />
+                                </PieChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="flex flex-col items-center justify-center h-full text-slate-500 space-y-2">
+                                <BanknotesIcon className="h-12 w-12 opacity-20" />
+                                <p className="text-sm font-medium">No liquidity data found for this branch</p>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="p-6 bg-slate-800/40 border border-slate-700/50 rounded-2xl">
+                            <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Total Liquidity</p>
+                            <p className="text-3xl font-bold text-white">{formatCurrency(branchLiquidity?.total_liquidity || 0)}</p>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3">
+                            {liquidityDistributionData.map((data, index) => (
+                                <div key={data.name} className="flex items-center justify-between p-4 bg-slate-900/20 border border-slate-800 rounded-xl">
+                                    <div className="flex items-center space-x-3">
+                                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: LIQUIDITY_COLORS[index % LIQUIDITY_COLORS.length] }}></div>
+                                        <span className="text-sm font-medium text-slate-300">{data.name}</span>
+                                    </div>
+                                    <span className="text-sm font-bold text-white">{formatCurrency(data.value)}</span>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
             </div>

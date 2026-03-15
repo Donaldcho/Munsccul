@@ -93,8 +93,8 @@ async def request_transfer(
         if current_user.role != models.UserRole.TELLER:
              raise HTTPException(status_code=403, detail="Only Tellers can initiate Vault Drops")
     elif data.transfer_type == models.VaultTransferType.VAULT_TO_TELLER:
-        if current_user.role != models.UserRole.TELLER:
-             raise HTTPException(status_code=403, detail="Only Tellers can request Morning Floats")
+        if current_user.role not in [models.UserRole.TELLER, models.UserRole.OPS_MANAGER, models.UserRole.BRANCH_MANAGER, models.UserRole.SYSTEM_ADMIN]:
+             raise HTTPException(status_code=403, detail="Unauthorized role for VAULT_TO_TELLER")
     elif data.transfer_type in [
         models.VaultTransferType.VAULT_TO_EXTERNAL,
         models.VaultTransferType.EXTERNAL_TO_DIGITAL,
@@ -107,7 +107,7 @@ async def request_transfer(
         transfer_ref=generate_transaction_ref(),
         transfer_type=data.transfer_type,
         branch_id=current_user.branch_id,
-        teller_id=current_user.id if current_user.role == models.UserRole.TELLER else None,
+        teller_id=data.teller_id if data.teller_id else (current_user.id if current_user.role == models.UserRole.TELLER else None),
         source_treasury_id=data.source_treasury_id,
         destination_treasury_id=data.destination_treasury_id,
         amount=data.amount,
@@ -286,3 +286,158 @@ async def external_bank_deposit(
     db.refresh(transfer)
     
     return transfer
+
+
+@router.post("/gl-opening-balances")
+async def post_gl_opening_balances(
+    request: Request,
+    entries: list[dict],
+    current_user: models.User = Depends(require_ops_manager),
+    db: Session = Depends(get_db)
+):
+    """
+    Post historical GL opening balances for COBAC audit compliance.
+    Used to bootstrap accounts that existed before the digital system.
+    
+    Each entry must have: { debit_gl_code, credit_gl_code, amount, description }
+    
+    Common usage:
+      - Vault cash: DR 1010 / CR 3010 (Retained Earnings)
+      - Share capital: DR 1010 / CR 2020 (Member Share Capital)  
+      - Member savings: DR 1010 / CR 2010 (Member Savings)
+      - Afriland balance: DR 1030 / CR 3010
+    """
+    posted = []
+    for entry in entries:
+        amount = Decimal(str(entry.get("amount", 0)))
+        if amount <= 0:
+            continue
+        
+        # Auto-create TreasuryAccount if it's a bank or momo GL
+        target_gl = entry["debit_gl_code"] if entry["debit_gl_code"].startswith("10") and entry["debit_gl_code"] != "1010" and entry["debit_gl_code"] != "1020" else None
+        if not target_gl and entry["credit_gl_code"].startswith("10") and entry["credit_gl_code"] != "1010" and entry["credit_gl_code"] != "1020":
+            target_gl = entry["credit_gl_code"]
+            
+        if target_gl:
+            existing_ta = db.query(models.TreasuryAccount).filter(
+                models.TreasuryAccount.gl_account_code == target_gl,
+                models.TreasuryAccount.branch_id == current_user.branch_id
+            ).first()
+            
+            if not existing_ta:
+                # Create default treasury account
+                ta_type = models.TreasuryAccountType.BANK if target_gl.startswith("103") else models.TreasuryAccountType.MOBILE_MONEY
+                ta_name = entry.get("description", "New Treasury Account").replace("Opening Balance: ", "")
+                new_ta = models.TreasuryAccount(
+                    name=ta_name,
+                    account_type=ta_type,
+                    gl_account_code=target_gl,
+                    branch_id=current_user.branch_id,
+                    is_active=True
+                )
+                db.add(new_ta)
+                db.flush()
+
+        ref = f"OPN-{generate_transaction_ref()}"
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=ref,
+            transaction_type="OPENING_BALANCE",
+            amount=amount,
+            description=entry.get("description", "Opening Balance"),
+            created_by=current_user.id,
+            debit_gl_code=entry["debit_gl_code"],
+            credit_gl_code=entry["credit_gl_code"]
+        )
+        posted.append({"ref": ref, "amount": float(amount), "description": entry.get("description")})
+    
+    db.commit()
+    
+    audit = AuditLogger(db, current_user, request)
+    audit.log("GL_OPENING_BALANCE", "GLAccount", "BULK", 
+              description=f"Posted {len(posted)} opening balance entries")
+    
+    return {"status": "ok", "posted_count": len(posted), "entries": posted}
+
+
+@router.post("/sync-accounts-to-gl")
+async def sync_member_accounts_to_gl(
+    request: Request,
+    current_user: models.User = Depends(require_ops_manager),
+    db: Session = Depends(get_db)
+):
+    """
+    COBAC Audit Tool: Backfill GL journal entries from actual account balances.
+    
+    Scans all active member accounts and creates OPENING_BALANCE GL entries
+    where no prior GL entry exists. This resolves the zero-equity problem —
+    the Trial Balance will correctly reflect Share Capital (2020) and 
+    Member Savings (2010) after this operation.
+    
+    Safe to run multiple times — skips accounts that already have GL entries.
+    """
+    from sqlalchemy import exists
+    
+    accounts = db.query(models.Account).filter(
+        models.Account.is_active == True,
+        models.Account.balance > 0
+    ).all()
+    
+    synced = []
+    skipped = []
+    
+    for acc in accounts:
+        # Determine GL credit code based on account type
+        if acc.account_type == models.AccountType.SHARES:
+            credit_gl = "2020"
+            desc_prefix = "Share Capital Opening Balance"
+        elif acc.account_type == models.AccountType.SAVINGS:
+            credit_gl = "2010"
+            desc_prefix = "Member Savings Opening Balance"
+        elif acc.account_type == models.AccountType.CURRENT:
+            credit_gl = "2010"
+            desc_prefix = "Current Account Opening Balance"
+        else:
+            skipped.append(acc.account_number)
+            continue
+        
+        # Check if this account already has GL entries
+        existing_gl = db.query(models.GLJournalEntry).join(
+            models.GLAccount, models.GLJournalEntry.gl_account_id == models.GLAccount.id
+        ).filter(
+            models.GLAccount.account_code == credit_gl,
+            models.GLJournalEntry.reference.like(f"%{acc.account_number}%")
+        ).first()
+        
+        if existing_gl:
+            skipped.append(acc.account_number)
+            continue
+        
+        # Post opening balance: DR Vault (1010) / CR Savings/Shares GL
+        ref = f"SYNC-{acc.account_number}-{generate_transaction_ref()[:8]}"
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=ref,
+            transaction_type="OPENING_BALANCE",
+            amount=Decimal(str(acc.balance)),
+            description=f"{desc_prefix}: {acc.account_number}",
+            created_by=current_user.id,
+            debit_gl_code="1010",   # Vault (asset side)
+            credit_gl_code=credit_gl
+        )
+        synced.append({"account": acc.account_number, "gl": credit_gl, "balance": float(acc.balance)})
+    
+    db.commit()
+    
+    audit = AuditLogger(db, current_user, request)
+    audit.log("GL_ACCOUNT_SYNC", "Account", "BULK",
+              description=f"GL sync: {len(synced)} accounts synced, {len(skipped)} skipped")
+    
+    return {
+        "status": "ok",
+        "synced_count": len(synced),
+        "skipped_count": len(skipped),
+        "synced": synced,
+        "message": f"GL sync complete. Run the Trial Balance report to verify."
+    }
+

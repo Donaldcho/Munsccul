@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
+from app.config import settings
 from app.auth import get_current_user, require_teller, generate_account_number
 from app.audit import AuditLogger
 from app import models, schemas
+from app.services.accounting import AccountingService
 
 router = APIRouter(prefix="/accounts", tags=["Account Management"])
 
@@ -54,26 +56,82 @@ async def create_account(
         models.AccountType.SAVINGS: 5,  # Financial accounts
         models.AccountType.CURRENT: 5,
         models.AccountType.FIXED_DEPOSIT: 5,
-        models.AccountType.LOAN: 4  # Third-party accounts
+        models.AccountType.LOAN: 4,     # Third-party accounts
+        models.AccountType.SHARES: 2    # Payable accounts / Stable Capital (OHADA Class 2)
     }
     
     account_class = account_class_map.get(account_data.account_type, 5)
+    
+    # Determine OHADA account category
+    account_category = "52" # Bank/Cash default
+    if account_data.account_type == models.AccountType.SHARES:
+        account_category = "20" # Capital/Shares
+    
+    # Set default minimum balance for shares if not provided
+    min_balance = account_data.minimum_balance or 0
+    if account_data.account_type == models.AccountType.SHARES and not account_data.minimum_balance:
+        min_balance = settings.MIN_SHARE_CAPITAL
     
     # Create account
     new_account = models.Account(
         account_number=account_number,
         account_class=account_class,
-        account_category="52",  # Bank/Cash
+        account_category=account_category,
         member_id=account_data.member_id,
         account_type=account_data.account_type,
         balance=0,
         available_balance=0,
         interest_rate=account_data.interest_rate or 0,
-        minimum_balance=account_data.minimum_balance or 0,
+        minimum_balance=min_balance,
         opened_by=current_user.id
     )
     
     db.add(new_account)
+    db.flush() # Ensure account ID is generated
+    
+    # Automated COBAC Journalization: Account Opening Fee
+    # Debit: Teller Cash (1020)
+    # Credit: Account Opening Fees (4210)
+    fee_amount = settings.ACCOUNT_OPENING_FEE
+    if fee_amount > 0:
+        # Resolve teller's GL account
+        teller_gl_id = current_user.teller_gl_account_id
+        if not teller_gl_id:
+             # Fallback to main teller GL code if user not explicitly linked
+             teller_gl_code = "1020"
+        else:
+             teller_gl_account = db.query(models.GLAccount).filter(models.GLAccount.id == teller_gl_id).first()
+             teller_gl_code = teller_gl_account.account_code if teller_gl_account else "1020"
+
+        ref = f"FEE-OPN-{new_account.account_number}"
+        
+        # Create a Transaction record for Daily Cash Flow reports
+        fee_tx = models.Transaction(
+            transaction_ref=ref,
+            account_id=new_account.id,
+            transaction_type=models.TransactionType.FEE, # Standard type
+            amount=fee_amount,
+            currency="XAF",
+            balance_after=new_account.balance,
+            description=f"Account Opening Fee - {new_account.account_number}",
+            payment_channel=models.PaymentChannel.CASH,
+            purpose="ACCOUNT_OPENING_FEE",
+            created_by=current_user.id,
+            branch_origin_id=current_user.branch_id
+        )
+        db.add(fee_tx)
+
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=ref,
+            transaction_type="ACCOUNT_OPENING_FEE",
+            amount=fee_amount,
+            description=f"Account Opening Fee - {new_account.account_number}",
+            created_by=current_user.id,
+            debit_gl_code=teller_gl_code,
+            credit_gl_code="4210"
+        )
+
     db.commit()
     db.refresh(new_account)
     

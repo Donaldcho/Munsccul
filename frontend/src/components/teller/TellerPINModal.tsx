@@ -7,7 +7,7 @@ interface TellerPINModalProps {
     onClose: () => void;
     onSuccess: () => void;
     amount: number;
-    type: 'DEPOSIT' | 'WITHDRAWAL' | 'NJANGI' | 'MOMO_DEPOSIT' | 'MOMO_WITHDRAWAL';
+    type: 'DEPOSIT' | 'WITHDRAWAL' | 'NJANGI' | 'MOMO_DEPOSIT' | 'MOMO_WITHDRAWAL' | 'SHARE_PURCHASE' | 'ONBOARDING';
 }
 
 export const TellerPINModal: React.FC<TellerPINModalProps> = ({ isOpen, onClose, onSuccess, amount, type }) => {

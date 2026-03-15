@@ -20,6 +20,7 @@ import { loansApi, membersApi, queueApi } from '../../services/api'
 import { njangiApi } from '../../services/njangiApi'
 import toast from 'react-hot-toast'
 import { format } from 'date-fns'
+import { formatCurrency } from '../../utils/formatters'
 
 interface CreditDashboardProps {
     loanStats: any

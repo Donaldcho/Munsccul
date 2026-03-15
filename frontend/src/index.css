@@ -155,12 +155,198 @@
     text-wrap: balance;
   }
 }
+
 @keyframes marquee {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+  0% {
+    transform: translateX(0);
+  }
+
+  100% {
+    transform: translateX(-50%);
+  }
 }
 
 .animate-marquee {
   display: inline-block;
   animation: marquee 30s linear infinite;
+}
+
+/* Premium A4 Laser Receipt Styles */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+
+  /* Global Reset for Print */
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: white !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    overflow: hidden !important;
+  }
+
+  /* Hide the entire application body by default but keep DOM nodes */
+  body * {
+    visibility: hidden !important;
+  }
+
+  /* Only show the receipt and its ancestors (to keep it rendered) */
+  .print-receipt,
+  .print-receipt * {
+    visibility: visible !important;
+  }
+
+  .print-receipt {
+    display: flex !important;
+    flex-direction: column !important;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    z-index: 9999999 !important;
+    background: white !important;
+    color: #0f172a !important;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+    overflow: hidden !important;
+  }
+
+  .receipt-copy {
+    position: relative !important;
+    height: 128mm !important;
+    /* Reduced for 100% safety on A4 */
+    width: 100% !important;
+    padding: 10mm 15mm !important;
+    box-sizing: border-box !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+    background: white !important;
+    page-break-inside: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  /* Watermark effect - Logo based */
+  .receipt-copy::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-30deg);
+    width: 120mm;
+    height: 120mm;
+    background-image: url('/logo.png');
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    opacity: 0.04;
+    z-index: 0;
+    pointer-events: none;
+    display: block !important;
+  }
+
+  .receipt-copy:first-child {
+    border-bottom: 2pt dashed #cbd5e1 !important;
+  }
+
+  .receipt-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 10mm;
+    border-bottom: 2pt solid #0f172a;
+    padding-bottom: 5mm;
+    z-index: 1;
+  }
+
+  .receipt-logo {
+    font-size: 28pt;
+    font-weight: 900;
+    letter-spacing: -1.5pt;
+    color: #0f172a;
+    line-height: 1;
+  }
+
+  .receipt-tagline {
+    font-size: 8pt;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 2pt;
+    margin-top: 1mm;
+  }
+
+  .receipt-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8mm;
+    margin-bottom: 10mm;
+    z-index: 1;
+  }
+
+  .receipt-item-label {
+    font-size: 7.5pt;
+    font-weight: 800;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1.2pt;
+    margin-bottom: 1.5mm;
+  }
+
+  .receipt-item-value {
+    font-size: 11pt;
+    font-weight: 600;
+    color: #0f172a;
+  }
+
+  .receipt-amount-box {
+    background: #f1f5f9 !important;
+    border-left: 4pt solid #0f172a;
+    padding: 6mm 8mm;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: auto;
+    z-index: 1;
+    border-radius: 2pt;
+  }
+
+  .receipt-footer {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 25mm;
+    margin-top: 10mm;
+    z-index: 1;
+  }
+
+  .signature-line {
+    border-top: 1pt solid #94a3b8;
+    text-align: center;
+    padding-top: 3mm;
+    font-size: 8pt;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+  }
+
+  .receipt-security-note {
+    text-align: center;
+    font-size: 6.5pt;
+    color: #94a3b8;
+    margin-top: 6mm;
+    letter-spacing: 0.3pt;
+    line-height: 1.5;
+    z-index: 1;
+  }
+
+  /* Force quality colors */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
 }

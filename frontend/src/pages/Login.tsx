@@ -29,7 +29,7 @@ export default function Login() {
           <BuildingLibraryIcon className="h-16 w-16 text-primary-600" />
         </div>
         <h2 className="mt-6 text-center text-3xl font-bold tracking-tight text-gray-900">
-          MUNSCCUL Banking System
+          Munimun Seamen's Cooperative Credit Union Limited
         </h2>
         <p className="mt-2 text-center text-sm text-gray-600">
           Next-Generation Core Banking for Credit Unions
@@ -151,7 +151,7 @@ export default function Login() {
         </div>
 
         <p className="mt-4 text-center text-xs text-gray-500">
-          © 2024 MUNSCCUL - COBAC Compliant Banking System
+          © 2024 Munimun Seamen's Cooperative Credit Union Limited - COBAC Compliant
           <br />
           Data hosted in Cameroon (Camtel Zamengoué)
         </p>

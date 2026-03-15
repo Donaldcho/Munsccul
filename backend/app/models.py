@@ -60,6 +60,8 @@ class TransactionType(str, enum.Enum):
     INTEREST = "INTEREST"
     NJANGI_CONTRIBUTION = "NJANGI_CONTRIBUTION"
     NJANGI_PAYOUT = "NJANGI_PAYOUT"
+    SHARE_PURCHASE = "SHARE_PURCHASE"
+    ENTRANCE_FEE = "ENTRANCE_FEE"
 
 
 class LoanStatus(str, enum.Enum):
@@ -95,6 +97,13 @@ class QueueServiceType(str, enum.Enum):
     CASH = "CASH"
     SERVICE = "SERVICE"
     LOAN = "LOAN"
+
+
+class PolicyStatus(str, enum.Enum):
+    """Governance status for system policies"""
+    ACTIVE = "ACTIVE"
+    PROPOSED = "PROPOSED"
+    ARCHIVED = "ARCHIVED"
 
 
 class VaultTransferType(str, enum.Enum):
@@ -192,6 +201,7 @@ class IntercomEntityType(str, enum.Enum):
     MEMBER_PROFILE = "MEMBER_PROFILE"
     LOAN_APP = "LOAN_APP"
     NJANGI_GROUP = "NJANGI_GROUP"
+    VOICE_SIGNAL = "VOICE_SIGNAL"
 
 
 class User(Base):
@@ -231,8 +241,8 @@ class User(Base):
     # Relationships
     branch = relationship("Branch", back_populates="users")
     audit_logs = relationship("AuditLog", back_populates="user")
-    transactions_created = relationship("Transaction", foreign_keys="[Transaction.created_by]", back_populates="creator")
-    transactions_approved = relationship("Transaction", foreign_keys="[Transaction.approved_by]", back_populates="approver")
+    transactions_created = relationship("Transaction", primaryjoin="User.id == Transaction.created_by", back_populates="creator")
+    transactions_approved = relationship("Transaction", primaryjoin="User.id == Transaction.approved_by", back_populates="approver")
     
     # IAM Relationships
     creator = relationship("User", remote_side=[id], foreign_keys=[created_by], backref="users_created")
@@ -349,6 +359,30 @@ class Member(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
+    @property
+    def total_savings(self) -> Decimal:
+        """Sum of all non-shares account balances"""
+        return sum((a.balance for a in self.accounts if a.account_type != AccountType.SHARES), Decimal("0.00"))
+
+    @property
+    def total_shares(self) -> Decimal:
+        """Sum of all shares account balances"""
+        return sum((a.balance for a in self.accounts if a.account_type == AccountType.SHARES), Decimal("0.00"))
+
+    @property
+    def total_stake(self) -> Decimal:
+        """Total wealth in the union (Shares + Savings)"""
+        return self.total_savings + self.total_shares
+
+    @property
+    def membership_status(self) -> str:
+        """Derived status based on share requirement (10,000 FCFA)"""
+        # Note: Importing settings inside to avoid circular imports if any
+        from app.config import settings
+        if self.total_shares >= settings.MIN_SHARE_CAPITAL:
+            return "FULL MEMBER"
+        return "APPLICANT"
+
     # Relationships
     branch = relationship("Branch", back_populates="members")
     accounts = relationship("Account", back_populates="member")
@@ -393,7 +427,7 @@ class Account(Base):
     
     # Relationships
     member = relationship("Member", back_populates="accounts")
-    transactions = relationship("Transaction", back_populates="account", foreign_keys="[Transaction.account_id]")
+    transactions = relationship("Transaction", back_populates="account", primaryjoin="Account.id == Transaction.account_id")
     holds = relationship("AccountHold", back_populates="account")
 
 
@@ -442,10 +476,10 @@ class Transaction(Base):
     created_at = Column(DateTime, server_default=func.now())
     
     # Relationships
-    account = relationship("Account", foreign_keys=[account_id], back_populates="transactions")
-    destination_account = relationship("Account", foreign_keys=[destination_account_id])
-    creator = relationship("User", foreign_keys=[created_by], back_populates="transactions_created")
-    approver = relationship("User", foreign_keys=[approved_by], back_populates="transactions_approved")
+    account = relationship("Account", primaryjoin="Transaction.account_id == Account.id", back_populates="transactions")
+    destination_account = relationship("Account", primaryjoin="Transaction.destination_account_id == Account.id")
+    creator = relationship("User", primaryjoin="Transaction.created_by == User.id", back_populates="transactions_created")
+    approver = relationship("User", primaryjoin="Transaction.approved_by == User.id", back_populates="transactions_approved")
     
     # Indexes for performance
     __table_args__ = (
@@ -617,6 +651,7 @@ class Loan(Base):
     board_approval_1_by = Column(Integer, ForeignKey("users.id"), nullable=True) # Tier 3
     board_approval_2_by = Column(Integer, ForeignKey("users.id"), nullable=True) # Tier 3
     is_insider_loan = Column(Boolean, default=False)
+    ai_risk_score = Column(Float, nullable=True)
     
     # Relationships
     member = relationship("Member", back_populates="loans")
@@ -1372,7 +1407,7 @@ class Currency(Base):
     
     # Display
     display_symbol = Column(String(10), nullable=False)  # FCFA, $, €
-    name_code = Column(String(10), nullable=False)  # currency.XAF
+    name_code = Column(String(50), nullable=False)  # currency.XAF
     
     # Position
     display_label = Column(String(50), default="symbol")  # symbol, code
@@ -1814,3 +1849,36 @@ class NjangiAIInsight(Base):
     # Relationships
     group = relationship("NjangiGroup")
     member = relationship("Member")
+
+
+class GlobalPolicy(Base):
+    """
+    Dynamic system policies that override config.py defaults.
+    Enforces Board Governance via Maker-Checker.
+    """
+    __tablename__ = "global_policies"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    policy_key = Column(String(50), index=True, nullable=False)
+    policy_value = Column(String(255), nullable=False) # Store as string, parse as needed
+    
+    status = Column(Enum(PolicyStatus), default=PolicyStatus.PROPOSED, nullable=False)
+    effective_date = Column(DateTime, server_default=func.now())
+    version = Column(Integer, default=1)
+    
+    proposed_by_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    
+    change_reason = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    proposed_by = relationship("User", foreign_keys=[proposed_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+
+    __table_args__ = (
+        # Ensure only one active version per policy key
+        Index('ix_active_policy', policy_key, status, unique=True, postgresql_where=(status == 'ACTIVE')),
+    )

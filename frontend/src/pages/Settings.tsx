@@ -115,7 +115,7 @@ export default function Settings() {
                   <label className="label">Institution Name</label>
                   <input
                     type="text"
-                    defaultValue="MUNSCCUL Credit Union"
+                    defaultValue="Munimun Seamen's Cooperative Credit Union Limited"
                     className="input"
                     readOnly
                   />

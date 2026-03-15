@@ -11,7 +11,7 @@ import os
 import shutil
 
 from app.database import get_db
-from app.auth import get_current_user, require_teller, require_member_access, generate_member_id
+from app.auth import get_current_user, require_teller, require_member_access, generate_member_id, generate_account_number
 from app.audit import AuditLogger
 from app import models, schemas
 
@@ -79,6 +79,30 @@ async def create_member(
     db.add(new_member)
     db.commit()
     db.refresh(new_member)
+    
+    # Generate initial accounts (Mandatory Shares + Savings)
+    shares_acc = models.Account(
+        account_number=generate_account_number(),
+        member_id=new_member.id,
+        account_type=models.AccountType.SHARES,
+        balance=0.0,
+        available_balance=0.0,
+        currency="XAF",
+        is_active=True
+    )
+    db.add(shares_acc)
+    
+    savings_acc = models.Account(
+        account_number=generate_account_number(),
+        member_id=new_member.id,
+        account_type=models.AccountType.SAVINGS,
+        balance=0.0,
+        available_balance=0.0,
+        currency="XAF",
+        is_active=True
+    )
+    db.add(savings_acc)
+    db.commit()
     
     # Log member creation
     audit = AuditLogger(db, current_user, request)
@@ -461,11 +485,11 @@ async def upload_signature_scan(
 @router.get("/{member_id}/photo")
 async def get_member_photo(
     member_id: int,
-    current_user: models.User = Depends(require_teller),
+    current_user: models.User = Depends(require_member_access),
     db: Session = Depends(get_db)
 ):
     """
-    Get member passport photo for Teller verification screen
+    Get member passport photo for Teller/Staff verification screen
     """
     member = db.query(models.Member).filter(models.Member.id == member_id).first()
     
@@ -481,11 +505,11 @@ async def get_member_photo(
 @router.get("/{member_id}/signature")
 async def get_member_signature(
     member_id: int,
-    current_user: models.User = Depends(require_teller),
+    current_user: models.User = Depends(require_member_access),
     db: Session = Depends(get_db)
 ):
     """
-    Get member signature scan for Teller verification screen
+    Get member signature scan for Staff verification screen
     """
     member = db.query(models.Member).filter(models.Member.id == member_id).first()
     

@@ -137,9 +137,12 @@ export const accountsApi = {
 export const transactionsApi = {
   getAll: (params?: any) => api.get('/transactions', { params }),
   deposit: (data: any) => api.post('/transactions/deposit', data),
+  onboardPayment: (data: { member_id: number, shares_amount: number, fee_amount: number, payment_channel?: string, description?: string }) =>
+    api.post('/transactions/onboard-payment', data),
   withdraw: (data: any) => api.post('/transactions/withdrawal', data),
   transfer: (data: any) => api.post('/transactions/transfer', data),
   approve: (data: any) => api.post('/transactions/approve', data),
+  purchaseShares: (data: any) => api.post('/transactions/purchase-shares', data),
   getDailyCashPosition: (params?: any) => api.get('/transactions/stats/daily-cash-position', { params }),
 }
 
@@ -195,7 +198,8 @@ export const opsApi = {
   getOpsInboxWebSocketUrl: (branchId: number) => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    return `${protocol}//${host}/api/v1/branches/ws/${branchId}`;
+    // Add ngrok-skip-browser-warning=true as query parameter because WebSockets can't send headers
+    return `${protocol}//${host}/api/v1/branches/ws/${branchId}?ngrok-skip-browser-warning=true`;
   },
 }
 
@@ -234,7 +238,8 @@ export const queueApi = {
   getWebSocketUrl: (branchId: number = 1) => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    return `${protocol}//${host}/api/v1/branches/ws/${branchId}`;
+    // Add ngrok-skip-browser-warning=true as query parameter because WebSockets can't send headers
+    return `${protocol}//${host}/api/v1/branches/ws/${branchId}?ngrok-skip-browser-warning=true`;
   },
 }
 
@@ -244,7 +249,8 @@ export const intercomApi = {
   getWebSocketUrl: (userId: number) => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    return `${protocol}//${host}/api/v1/intercom/ws/${userId}`;
+    // Add ngrok-skip-browser-warning=true as query parameter because WebSockets can't send headers
+    return `${protocol}//${host}/api/v1/intercom/ws/${userId}?ngrok-skip-browser-warning=true`;
   }
 }
 
@@ -257,7 +263,15 @@ export const treasuryApi = {
   getAccounts: () => api.get('/treasury/accounts'),
   getPendingTransfers: () => api.get('/treasury/transfers/pending'),
   approveTransfer: (id: number, data: { approved: boolean, manager_pin: string }) => api.post(`/treasury/transfer/${id}/approve`, data),
-  requestTransfer: (data: { amount: number, transfer_type: string, description?: string, source_treasury_id?: number | null, destination_treasury_id?: number | null }) => api.post('/treasury/transfer/request', data),
+  requestTransfer: (data: { amount: number, transfer_type: string, description?: string, source_treasury_id?: number | null, destination_treasury_id?: number | null, teller_id?: number | null }) => api.post('/treasury/transfer/request', data),
   vaultAdjustment: (data: { amount: number, description: string }) => api.post('/treasury/vault-adjustment', data),
   externalBankDeposit: (data: { amount: number, transfer_type: string, description?: string }) => api.post('/treasury/external-bank-deposit', data),
+}
+export const policiesApi = {
+  getActive: () => api.get('/policies/active'),
+  getProposals: () => api.get('/policies/proposals'),
+  propose: (data: { policy_key: string; policy_value: string; change_reason: string; effective_date?: string }) =>
+    api.post('/policies/propose', data),
+  approve: (id: number, data: { reason?: string }) => api.post(`/policies/approve/${id}`, data),
+  getHistory: (key: string) => api.get(`/policies/history/${key}`),
 }

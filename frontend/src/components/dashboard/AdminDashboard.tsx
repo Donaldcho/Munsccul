@@ -202,8 +202,20 @@ export default function AdminDashboard({ stats }: AdminDashboardProps) {
             icon: ShieldCheckIcon,
             color: 'bg-blue-500',
             status: 'Verified'
+        },
+        {
+            name: 'Stable Capital',
+            value: formatCurrency(stats?.capital_adequacy?.total_shares || 0),
+            icon: BuildingOfficeIcon,
+            color: 'bg-emerald-600',
+            status: 'Share Capital (Class 2)'
         }
-    ]
+    ].filter(card => {
+        if (card.name === 'Stable Capital' && user?.role === 'SYSTEM_ADMIN') {
+            return false
+        }
+        return true
+    })
 
     return (
         <div className="space-y-6">

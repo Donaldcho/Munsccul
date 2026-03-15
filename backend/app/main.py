@@ -3,6 +3,7 @@ MUNSCCUL Next-Gen Core Banking System - Main Application
 FastAPI backend with COBAC compliance, Fineract-level security, and offline-first architecture
 """
 from fastapi import FastAPI, Request, status, WebSocket
+from fastapi.openapi.docs import get_redoc_html
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -39,7 +40,8 @@ from app.routers import (
     njangi,
     intercom,
     kyc,
-    treasury
+    treasury,
+    policies
 )
 
 # Configure logging
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
+    redoc_url=None, # Disable default (broken) Redoc CDN link
     description="""
     MUNSCCUL Next-Gen Core Banking System API
     
@@ -197,6 +200,7 @@ app.include_router(njangi.router, prefix="/api/v1")  # Smart Njangi (Tontine)
 app.include_router(intercom.router, prefix="/api/v1")  # Secure Internal Intercom
 app.include_router(kyc.router, prefix="/api/v1")  # KYC OCR Scanner
 app.include_router(treasury.router, prefix="/api/v1")  # Treasury Management
+app.include_router(policies.router, prefix="/api/v1")  # Board Governance Policies
 
 # Health check endpoint
 @app.get("/health", tags=["Health"])
@@ -209,6 +213,16 @@ async def health_check():
         "reporting_version": "v2.2-DEBUG-MATRIX",
         "timestamp": time.time()
     }
+
+
+@app.get("/redoc", include_in_schema=False)
+async def custom_redoc_html():
+    """Custom Redoc route with the working CDN URL"""
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=app.title + " - ReDoc",
+        redoc_js_url="https://cdn.jsdelivr.net/npm/redoc/bundles/redoc.standalone.js"
+    )
 
 
 # Root endpoint

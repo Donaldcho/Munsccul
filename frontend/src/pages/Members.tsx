@@ -6,11 +6,14 @@ import {
   UserCircleIcon,
   PhoneIcon,
   MapPinIcon,
-  CameraIcon
+  CameraIcon,
+  ExclamationCircleIcon,
+  ArrowPathIcon
 } from '@heroicons/react/24/outline'
 import { membersApi, kycApi } from '../services/api'
 import { formatDate, formatPhone } from '../utils/formatters'
 import toast from 'react-hot-toast'
+import { getErrorMessage } from '../utils/errorUtils'
 
 interface Member {
   id: number
@@ -27,6 +30,7 @@ interface Member {
 export default function Members() {
   const [members, setMembers] = useState<Member[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [showAddModal, setShowAddModal] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
@@ -51,13 +55,15 @@ export default function Members() {
   const fetchMembers = async () => {
     try {
       setIsLoading(true)
+      setLoadError(null)
       const response = await membersApi.getAll({
         search: searchQuery || undefined,
         limit: 100
       })
       setMembers(response.data)
-    } catch (error) {
-      toast.error('Failed to fetch members')
+    } catch (error: any) {
+      const msg = getErrorMessage(error, 'Unable to load members. Please try again.')
+      setLoadError(msg)
     } finally {
       setIsLoading(false)
     }
@@ -170,16 +176,33 @@ export default function Members() {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={6} className="text-center py-8">
-                    <div className="flex justify-center">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+                  <td colSpan={6} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-3 text-slate-400">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
+                      <p className="text-sm">Loading members...</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : loadError ? (
+                <tr>
+                  <td colSpan={6} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-3">
+                      <ExclamationCircleIcon className="h-10 w-10 text-amber-400" />
+                      <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Could not load members</p>
+                      <p className="text-xs text-slate-400">{loadError}</p>
+                      <button onClick={fetchMembers} className="mt-2 inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 text-sm font-medium hover:bg-primary-100 transition-colors">
+                        <ArrowPathIcon className="h-4 w-4" /> Try Again
+                      </button>
                     </div>
                   </td>
                 </tr>
               ) : members.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="text-center py-8 text-gray-500 dark:text-slate-400">
-                    No members found
+                  <td colSpan={6} className="text-center py-12 text-gray-500 dark:text-slate-400">
+                    <div className="flex flex-col items-center gap-2">
+                      <UserCircleIcon className="h-10 w-10 text-slate-300" />
+                      <p className="text-sm">{searchQuery ? 'No members match your search.' : 'No members registered yet.'}</p>
+                    </div>
                   </td>
                 </tr>
               ) : (

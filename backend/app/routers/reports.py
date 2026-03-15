@@ -15,7 +15,7 @@ router = APIRouter(prefix="/reports", tags=["Regulatory Reports"])
 
 @router.get("/dashboard")
 async def get_dashboard(
-    current_user: models.User = Depends(get_current_active_user),
+    current_user: models.User = Depends(require_global_reporting_access),
     db: Session = Depends(get_db)
 ):
     """Get high-level dashboard statistics for Admin/Manager views"""
@@ -24,7 +24,11 @@ async def get_dashboard(
         
         accounts_total = db.query(models.Account).count()
         total_deposits = db.query(func.sum(models.Account.balance)).filter(
-            models.Account.account_type.in_([models.AccountType.SAVINGS, models.AccountType.CURRENT, models.AccountType.FIXED_DEPOSIT])
+            models.Account.account_type.in_([
+                models.AccountType.SAVINGS, 
+                models.AccountType.CURRENT, 
+                models.AccountType.FIXED_DEPOSIT
+            ])
         ).scalar() or 0
         
         loans_outstanding = db.query(func.sum(models.Loan.amount_outstanding)).filter(
@@ -47,11 +51,25 @@ async def get_dashboard(
             db.query(models.User).filter(models.User.approval_status == models.UserApprovalStatus.PENDING).count()
         )
 
+        # Capital Adequacy Report: Total Loans (1210) vs Total Share Capital (2020)
+        total_shares_capital = db.query(func.sum(models.Account.balance)).filter(
+            models.Account.account_type == models.AccountType.SHARES
+        ).scalar() or 0
+        
+        capital_adequacy_ratio = 0
+        if total_shares_capital > 0:
+            capital_adequacy_ratio = float(loans_outstanding) / float(total_shares_capital)
+
         dashboard_data = {
             "accounts": {"total": accounts_total, "total_deposits": float(total_deposits)},
             "loans": {"total_outstanding": float(loans_outstanding), "disbursed_today": float(disbursed_today), "collections_today": float(collections_today)},
             "pending_approvals": pending_approvals,
-            "members": {"total": members_total}
+            "members": {"total": members_total},
+            "capital_adequacy": {
+                "total_shares": float(total_shares_capital),
+                "ratio": round(capital_adequacy_ratio, 2),
+                "status": "HEALTHY" if capital_adequacy_ratio <= 10 else "HEAVY_LOANING" # COBAC guidelines vary
+            }
         }
         
         return dashboard_data
@@ -238,7 +256,7 @@ async def get_daily_cash_flow(
 @router.get("/cobac/liquidity")
 async def get_cobac_liquidity(
     report_period: str = Query("daily"),
-    current_user: models.User = Depends(get_current_active_user),
+    current_user: models.User = Depends(require_global_reporting_access),
     db: Session = Depends(get_db)
 ):
     """Get COBAC Liquidity Ratio for dashboards"""
@@ -250,7 +268,7 @@ async def get_board_metrics(
     db: Session = Depends(get_db)
 ):
     """Aggregated metrics for the Board Executive Dashboard"""
-    if current_user.role not in [models.UserRole.BOARD_MEMBER, models.UserRole.SYSTEM_ADMIN, models.UserRole.AUDITOR, models.UserRole.OPS_DIRECTOR]:
+    if current_user.role not in [models.UserRole.BOARD_MEMBER, models.UserRole.AUDITOR, models.UserRole.OPS_DIRECTOR]:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
     return ReportingService.get_board_metrics(db)
 

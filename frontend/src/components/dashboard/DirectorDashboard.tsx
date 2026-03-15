@@ -22,6 +22,7 @@ export default function DirectorDashboard() {
     const [loanApplications, setLoanApplications] = useState<any[]>([])
     const [pendingTransactions, setPendingTransactions] = useState<any[]>([])
     const [liquidityRatio, setLiquidityRatio] = useState<number | null>(null)
+    const [totalShares, setTotalShares] = useState<number>(0)
     const [managedUsers, setManagedUsers] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
     const [limit, setLimit] = useState(0)
@@ -35,11 +36,12 @@ export default function DirectorDashboard() {
     const fetchAllData = async () => {
         setLoading(true)
         try {
-            const [usersRes, loansRes, txnsRes, liquidityRes] = await Promise.all([
+            const [usersRes, loansRes, txnsRes, liquidityRes, dashRes] = await Promise.all([
                 usersApi.getAll(),
                 loansApi.getAll({ status: 'PENDING_REVIEW' }),
                 transactionsApi.getAll({ pending_only: true }),
-                reportsApi.getCobacLiquidity(format(new Date(), 'yyyy-MM'))
+                reportsApi.getCobacLiquidity(format(new Date(), 'yyyy-MM')),
+                reportsApi.getDashboard()
             ])
 
             // Filter users client-side as API returns all
@@ -52,6 +54,7 @@ export default function DirectorDashboard() {
             setLoanApplications(loansRes.data.filter((l: any) => (l.principal_amount || l.amount) > 1000000 && l.approved_by != null))
             setPendingTransactions(txnsRes.data.transactions || [])
             setLiquidityRatio(liquidityRes.data.liquidity_ratio)
+            setTotalShares(dashRes?.data?.capital_adequacy?.total_shares || 0)
         } catch (error) {
             console.error('Failed to fetch manager data', error)
         } finally {
@@ -289,6 +292,16 @@ export default function DirectorDashboard() {
                                 <p className={`text-sm font-bold ${(liquidityRatio || 0) >= 100 ? 'text-green-600' : 'text-red-600'}`}>
                                     {(liquidityRatio || 0) >= 100 ? 'COMPLIANT' : 'NON-COMPLIANT'}
                                 </p>
+                            </div>
+
+                            <div className="mt-6 pt-6 border-t border-gray-100 dark:border-slate-700">
+                                <p className="text-[10px] uppercase tracking-widest font-black text-slate-500 mb-2">Stable Capital Base</p>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                                        {formatCurrency(totalShares)}
+                                    </span>
+                                    <span className="text-[10px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-800 dark:text-emerald-300 rounded uppercase font-bold">Class 2</span>
+                                </div>
                             </div>
                         </div>
                     </div>

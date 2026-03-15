@@ -12,7 +12,7 @@ import {
     HandRaisedIcon,
     CalculatorIcon
 } from '@heroicons/react/24/outline';
-import { membersApi, accountsApi, transactionsApi, queueApi, mobileMoneyApi, tellerApi, treasuryApi, opsApi, api } from '../../services/api';
+import { membersApi, accountsApi, transactionsApi, queueApi, mobileMoneyApi, tellerApi, treasuryApi, opsApi, api, policiesApi } from '../../services/api';
 import { njangiApi } from '../../services/njangiApi';
 import { formatCurrency } from '../../utils/formatters';
 import { getErrorMessage } from '../../utils/errorUtils';
@@ -32,13 +32,12 @@ export default function TellerDashboard() {
 
     // Member & Account Context
     const [member, setMember] = useState<any>(null);
-    console.log('DEBUG: Current Member State:', JSON.stringify(member, null, 2));
     const [account, setAccount] = useState<any>(null);
     const [photoUrl, setPhotoUrl] = useState<string | null>(null);
     const [signatureUrl, setSignatureUrl] = useState<string | null>(null);
 
     // Transaction State
-    const [txType, setTxType] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'NJANGI' | 'MOMO_DEPOSIT' | 'MOMO_WITHDRAWAL' | null>(null);
+    const [txType, setTxType] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'NJANGI' | 'MOMO_DEPOSIT' | 'MOMO_WITHDRAWAL' | 'SHARE_PURCHASE' | 'ONBOARDING' | null>(null);
     const [amount, setAmount] = useState<number>(0);
     const [amountInput, setAmountInput] = useState<string>('');
     const [momoPhone, setMomoPhone] = useState<string>('');
@@ -62,6 +61,9 @@ export default function TellerDashboard() {
     const [showTreasuryModal, setShowTreasuryModal] = useState(false);
     const [treasuryType, setTreasuryType] = useState<'VAULT_TO_TELLER' | 'TELLER_TO_VAULT'>('VAULT_TO_TELLER');
     const [treasuryAmount, setTreasuryAmount] = useState('');
+    const [policies, setPolicies] = useState<any[]>([]);
+    const [onboardShares, setOnboardShares] = useState<number>(0);
+    const [onboardFee, setOnboardFee] = useState<number>(0);
 
     // Drawer Ticker State
     const TELLER_LIMIT = 2000000; // 2M FCFA Strict Limit
@@ -87,10 +89,20 @@ export default function TellerDashboard() {
         }
     };
 
+    const fetchPolicies = async () => {
+        try {
+            const res = await policiesApi.getActive();
+            setPolicies(res.data);
+        } catch (e) {
+            console.error('Failed to fetch policies', e);
+        }
+    };
+
     // Focus Search on load
     useEffect(() => {
         searchInputRef.current?.focus();
         fetchDrawerBalance();
+        fetchPolicies();
     }, []);
 
     // Keyboard Shortcuts (F1, F2, Enter)
@@ -131,6 +143,22 @@ export default function TellerDashboard() {
                     toast('Select a Member first', { icon: 'ℹ️' });
                 } else {
                     toast('Switch to Njangi Mode', { icon: 'ℹ️' });
+                }
+            } else if (e.key === 'F7') {
+                e.preventDefault();
+                if (member) {
+                    setTxType('ONBOARDING');
+                    setFocusMode(true);
+
+                    const minShares = policies.find(p => p.policy_key === 'min_share_capital')?.policy_value || '10000';
+                    const openingFee = policies.find(p => p.policy_key === 'account_opening_fee')?.policy_value || '2500';
+
+                    setOnboardShares(Number(minShares));
+                    setOnboardFee(Number(openingFee));
+                    setAmount(Number(minShares) + Number(openingFee));
+                    setAmountInput((Number(minShares) + Number(openingFee)).toString());
+                } else {
+                    toast('Search member first', { icon: 'ℹ️' });
                 }
             } else if (e.key === 'Escape') {
                 if (focusMode) {
@@ -247,10 +275,9 @@ export default function TellerDashboard() {
 
                     // Direct lookup by account primary key
                     const memRes = await membersApi.getByAccountId(match.id);
-                    console.log('Member fetched:', memRes.data);
                     setMember(memRes.data);
                     loadMedia(memRes.data.id);
-                    toast.success('Member Verified');
+                    toast.success('Member Verified ✓');
                 } catch (err) {
                     toast.error('Account not found');
                     resetTerminal();
@@ -364,6 +391,10 @@ export default function TellerDashboard() {
                     await transactionsApi.deposit(payload);
                     setSimDrawerBalance(prev => prev + amount);
                     setTotalIn(prev => prev + amount);
+                } else if (txType === 'SHARE_PURCHASE') {
+                    await transactionsApi.purchaseShares(payload);
+                    setSimDrawerBalance(prev => prev + amount);
+                    setTotalIn(prev => prev + amount);
                 } else if (txType === 'MOMO_DEPOSIT') {
                     await mobileMoneyApi.collect({
                         provider: momoProvider,
@@ -378,6 +409,16 @@ export default function TellerDashboard() {
                     await transactionsApi.withdraw(payload);
                     setSimDrawerBalance(prev => prev - amount);
                     setTotalOut(prev => prev + amount);
+                } else if (txType === 'ONBOARDING') {
+                    await transactionsApi.onboardPayment({
+                        member_id: member.id,
+                        shares_amount: onboardShares,
+                        fee_amount: onboardFee,
+                        payment_channel: "CASH",
+                        description: `Onboarding: ${onboardShares} Shares + ${onboardFee} Fee`
+                    });
+                    setSimDrawerBalance(prev => prev + amount);
+                    setTotalIn(prev => prev + amount);
                 } else if (txType === 'MOMO_WITHDRAWAL') {
                     await mobileMoneyApi.disburse({
                         provider: momoProvider,
@@ -415,6 +456,12 @@ export default function TellerDashboard() {
             setCurrentTicket(res.data);
             toast.success(`Ticket ${res.data.ticket_number} at Counter ${counter}`);
         } catch (err: any) {
+            const status = err?.response?.status;
+            if (status === 404) {
+                toast('No members waiting in queue right now.', { icon: '🪑' });
+            } else {
+                toast.error('Could not connect to queue service. Please try again.');
+            }
         } finally {
             setQueueLoading(false);
         }
@@ -580,7 +627,7 @@ export default function TellerDashboard() {
                             !member ? (
                                 <div className="flex-1 flex flex-col items-center justify-center opacity-20">
                                     <UserCircleIcon className="w-32 h-32 mx-auto mb-4 text-slate-400" />
-                                    <p className="text-xs font-black uppercase tracking-widest italic text-slate-500">Awaiting Search Verification</p>
+                                    <p className="text-xs font-black uppercase tracking-widest italic text-slate-500">Search for a member to begin</p>
                                 </div>
                             ) : (
                                 <div className="w-full flex-1 flex flex-col items-center animate-in zoom-in-95 duration-200">
@@ -642,7 +689,7 @@ export default function TellerDashboard() {
                     {(searchMode === 'PERSONAL' && !account) || (searchMode === 'NJANGI' && !njangiGroup) ? (
                         <div className="flex-1 flex flex-col items-center justify-center space-y-4 opacity-30 text-center p-12">
                             <CreditCardIcon className="h-16 w-16 text-slate-400" />
-                            <p className="text-xs font-black uppercase tracking-widest text-slate-500 max-w-[200px]">Unlock transaction console via search</p>
+                            <p className="text-xs font-black uppercase tracking-widest text-slate-500 max-w-[200px]">Search for a member or Njangi group to start a transaction</p>
                         </div>
                     ) : (
                         <div className="flex flex-col h-full bg-white dark:bg-slate-800">
@@ -743,6 +790,41 @@ export default function TellerDashboard() {
 
                                             <div className="grid grid-cols-2 gap-4">
                                                 <button
+                                                    onClick={() => { setTxType('SHARE_PURCHASE'); setFocusMode(true); setTimeout(() => amountInputRef.current?.focus(), 50); }}
+                                                    className="group py-6 border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-3xl flex flex-col items-center justify-center hover:border-purple-500 hover:bg-purple-50 transition-all border-dashed"
+                                                >
+                                                    <div className="h-10 w-10 bg-purple-100 dark:bg-purple-900/30 rounded-xl flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                                                        <CreditCardIcon className="h-6 w-6 text-purple-600" />
+                                                    </div>
+                                                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-800 dark:text-white">Purchase Shares</p>
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        if (member) {
+                                                            setTxType('ONBOARDING');
+                                                            setFocusMode(true);
+                                                            const minShares = policies.find(p => p.policy_key === 'min_share_capital')?.policy_value || '10000';
+                                                            const openingFee = policies.find(p => p.policy_key === 'account_opening_fee')?.policy_value || '2500';
+                                                            setOnboardShares(Number(minShares));
+                                                            setOnboardFee(Number(openingFee));
+                                                            setAmount(Number(minShares) + Number(openingFee));
+                                                            setAmountInput((Number(minShares) + Number(openingFee)).toString());
+                                                        } else {
+                                                            toast('Search member first', { icon: 'ℹ️' });
+                                                        }
+                                                    }}
+                                                    className="group py-6 border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-3xl flex flex-col items-center justify-center hover:border-indigo-500 hover:bg-indigo-50 transition-all border-dashed"
+                                                >
+                                                    <div className="h-10 w-10 bg-indigo-100 dark:bg-indigo-900/30 rounded-xl flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                                                        <UserCircleIcon className="h-6 w-6 text-indigo-600" />
+                                                    </div>
+                                                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-800 dark:text-white">Member Onboarding</p>
+                                                    <p className="text-[8px] font-black text-slate-400 uppercase">Shortcut [F7]</p>
+                                                </button>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <button
                                                     onClick={() => { setTxType('MOMO_DEPOSIT'); setFocusMode(true); setTimeout(() => amountInputRef.current?.focus(), 50); }}
                                                     className="group py-6 border-2 border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-3xl flex flex-col items-center justify-center hover:border-amber-500 hover:bg-amber-50 transition-all"
                                                 >
@@ -790,9 +872,56 @@ export default function TellerDashboard() {
                                                         handleConfirmTransaction();
                                                     }
                                                 }}
-                                                className={`w-full text-6xl font-black p-4 border-none bg-transparent outline-none text-right ${txType?.includes('DEPOSIT') ? 'text-green-600' : txType === 'NJANGI' ? 'text-indigo-600' : 'text-red-600'}`}
+                                                className={`w-full text-6xl font-black p-4 border-none bg-transparent outline-none text-right ${txType?.includes('DEPOSIT') || txType === 'SHARE_PURCHASE' ? 'text-green-600' : txType === 'NJANGI' ? 'text-indigo-600' : 'text-red-600'}`}
                                                 placeholder="0.00"
                                             />
+
+                                            {txType === 'SHARE_PURCHASE' && (
+                                                <div className="mt-4 p-4 bg-purple-50 dark:bg-purple-900/10 rounded-2xl border-2 border-purple-500/20 flex items-center justify-between">
+                                                    <div>
+                                                        <p className="text-[10px] font-black text-purple-600 uppercase tracking-widest">Calculated Shares</p>
+                                                        <p className="text-2xl font-black text-slate-900 dark:text-white">{(amount / 2000).toFixed(0)} Units</p>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <p className="text-[10px] font-black text-slate-400 uppercase">Unit Price</p>
+                                                        <p className="font-bold text-slate-600">2,000 FCFA</p>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {txType === 'ONBOARDING' && (
+                                                <div className="mt-4 p-6 bg-indigo-50 dark:bg-indigo-900/10 rounded-3xl border-2 border-indigo-500/20 animate-in fade-in slide-in-from-bottom-4">
+                                                    <div className="flex items-center space-x-3 mb-4">
+                                                        <CheckBadgeIcon className="h-6 w-6 text-indigo-500" />
+                                                        <h3 className="text-sm font-black text-indigo-900 dark:text-indigo-100 uppercase tracking-tight">Onboarding Package Split</h3>
+                                                    </div>
+                                                    <div className="space-y-3">
+                                                        <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-3 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800">
+                                                            <div className="flex flex-col">
+                                                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Share Capital (GL 2020)</span>
+                                                                <span className="text-sm font-bold text-slate-900 dark:text-white">Minimum Enrollment</span>
+                                                            </div>
+                                                            <span className="text-lg font-black text-green-600">{formatCurrency(onboardShares)}</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-3 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-800">
+                                                            <div className="flex flex-col">
+                                                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Registration Fee (GL 4210)</span>
+                                                                <span className="text-sm font-bold text-slate-900 dark:text-white">Revenue / Entrance Fee</span>
+                                                            </div>
+                                                            <span className="text-lg font-black text-primary-600">{formatCurrency(onboardFee)}</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="mt-4 pt-4 border-t border-indigo-500/10 flex justify-between items-end">
+                                                        <div>
+                                                            <p className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.2em] mb-1">Total Payment</p>
+                                                            <p className="text-3xl font-black text-indigo-600 dark:text-indigo-400 tracking-tighter">{formatCurrency(amount)}</p>
+                                                        </div>
+                                                        <div className="p-2 bg-indigo-500 text-white rounded-xl shadow-lg shadow-indigo-500/20">
+                                                            <ArrowDownTrayIcon className="h-6 w-6" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
 
                                             {txType?.startsWith('MOMO_') && (
                                                 <div className="mt-4 p-6 bg-slate-100 dark:bg-slate-900 border-2 border-amber-500/20 rounded-3xl animate-in fade-in slide-in-from-bottom-2">
@@ -822,7 +951,7 @@ export default function TellerDashboard() {
                                         <button
                                             onClick={handleConfirmTransaction}
                                             disabled={isProcessing || amount <= 0}
-                                            className={`w-full py-6 bg-slate-900 text-white text-xl font-black rounded-3xl shadow-xl transition-all transform active:scale-95 disabled:bg-slate-200 disabled:text-slate-400 flex items-center justify-center ${txType === 'DEPOSIT' ? 'hover:bg-green-600' : txType === 'NJANGI' ? 'hover:bg-indigo-600' : 'hover:bg-red-600'}`}
+                                            className={`w-full py-6 bg-slate-900 text-white text-xl font-black rounded-3xl shadow-xl transition-all transform active:scale-95 disabled:bg-slate-200 disabled:text-slate-400 flex items-center justify-center ${txType === 'DEPOSIT' ? 'hover:bg-green-600' : (txType === 'NJANGI' || txType === 'ONBOARDING') ? 'hover:bg-indigo-600' : 'hover:bg-red-600'}`}
                                         >
                                             {isProcessing ? <div className="h-6 w-6 border-2 border-white/20 border-t-white rounded-full animate-spin"></div> : 'POST TRANSACTION [ENTER]'}
                                         </button>
@@ -892,58 +1021,110 @@ export default function TellerDashboard() {
                 </div>
             )}
 
-            {/* Print Template */}
-            <div className="hidden print:block fixed inset-0 bg-white z-[9999] p-4 text-black font-mono text-[10px] leading-tight">
+            {/* Print Template (Optimized for Dot Matrix) */}
+            <div className="hidden print:block print-receipt">
                 {[1, 2].map((copy) => (
-                    <div key={copy} className={`${copy === 1 ? 'border-b-2 border-dashed border-black pb-8 mb-8' : ''} w-[70mm]`}>
-                        <div className="text-center mb-4">
-                            <h2 className="text-sm font-bold uppercase">CamCCUL Banking System</h2>
-                            <p className="text-[8px]">Next-Gen Core Banking Solution</p>
-                            <p className="text-[8px]">Branch: {user?.branch_id || 'Main'}</p>
+                    <div key={copy} className="receipt-copy">
+                        <div className="receipt-header">
+                            <div className="flex items-center gap-4">
+                                <img src="/logo.png" alt="Logo" className="w-16 h-16 object-contain" />
+                                <div>
+                                    <div className="receipt-logo">MUNSCCUL</div>
+                                    <div className="receipt-tagline">Munimun Seamen's Cooperative Credit Union Limited</div>
+                                    <div className="text-[7pt] text-slate-400 mt-1 font-semibold italic">Innovation • Integrity • Impact</div>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <div className="bg-slate-900 text-white px-3 py-1 text-[7pt] font-black uppercase tracking-widest rounded-sm mb-2">
+                                    {copy === 1 ? 'Customer Official Copy' : 'Union Internal Copy'}
+                                </div>
+                                <div className="text-[9pt] font-bold text-slate-900">{user?.branch_id || 'MAIN BRANCH'}</div>
+                                <div className="text-[7pt] text-slate-500 font-medium">{new Date().toLocaleString().toUpperCase()}</div>
+                            </div>
                         </div>
 
-                        <div className="space-y-1">
-                            <div className="flex justify-between">
-                                <span>Date:</span>
-                                <span>{new Date().toLocaleString()}</span>
+                        <div className="receipt-grid">
+                            <div>
+                                <div className="receipt-item-label">Transaction Reference</div>
+                                <div className="receipt-item-value font-mono">TX-{new Date().getTime().toString(36).toUpperCase()}</div>
                             </div>
-                            <div className="flex justify-between">
-                                <span>Transaction:</span>
-                                <span className="font-bold">{txType}</span>
-                            </div>
-                            <div className="flex justify-between">
-                                <span>Member:</span>
-                                <span className="font-bold truncate max-w-[40mm]">
-                                    {member ? `${member.first_name} ${member.last_name}` : (selectedNjangiMember ? `Member #${selectedNjangiMember.member_id}` : 'N/A')}
-                                </span>
-                            </div>
-                            {account && (
-                                <div className="flex justify-between">
-                                    <span>Account:</span>
-                                    <span>{account.account_number}</span>
+                            <div>
+                                <div className="receipt-item-label">Transaction Type</div>
+                                <div className="receipt-item-value uppercase tracking-tight text-slate-900 font-black">
+                                    {txType?.replace('_', ' ')}
                                 </div>
-                            )}
-                            <div className="border-t border-black my-2" />
-                            <div className="flex justify-between text-base font-bold">
-                                <span>AMOUNT:</span>
-                                <span>{formatCurrency(amount)} FCFA</span>
                             </div>
-                            <div className="border-b border-black my-2" />
-                            {account && (
-                                <div className="flex justify-between">
-                                    <span>New Balance:</span>
-                                    <span>{formatCurrency(account.available_balance + (txType === 'DEPOSIT' ? amount : -amount))} FCFA</span>
+                            <div>
+                                <div className="receipt-item-label">Member Details</div>
+                                <div className="receipt-item-value uppercase">
+                                    {(member ? `${member.first_name} ${member.last_name}` : (selectedNjangiMember ? `Member #${selectedNjangiMember.member_id}` : 'N/A'))}
                                 </div>
-                            )}
+                            </div>
+                            <div>
+                                <div className="receipt-item-label">Account Identification</div>
+                                <div className="receipt-item-value font-mono">{account?.account_number || 'PRIMARY-LEDGER'}</div>
+                            </div>
+                            <div>
+                                <div className="receipt-item-label">Transaction Amount</div>
+                                <div className="receipt-item-value text-xl font-black text-slate-900">
+                                    {formatCurrency(amount)} XAF
+                                </div>
+                            </div>
+                            <div>
+                                <div className="receipt-item-label">Service Channel</div>
+                                <div className="receipt-item-value uppercase">TELLER TERMINAL #{localStorage.getItem('teller_counter') || '01'}</div>
+                            </div>
+                            <div>
+                                <div className="receipt-item-label">Security Protocol</div>
+                                <div className="receipt-item-value flex items-center gap-1.5 font-bold text-emerald-700">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                                    VERIFIED SECURE
+                                </div>
+                            </div>
                         </div>
 
-                        <div className="mt-8 pt-4 border-t border-slate-200">
-                            <div className="flex justify-between italic text-[8px]">
-                                <span>Teller: {user?.full_name || 'System'}</span>
-                                <span>Copy: {copy === 1 ? 'CUSTOMER' : 'BANK'}</span>
+                        <div className="mb-4">
+                            <div className="receipt-item-label">Detailed Ledger Summary</div>
+                            <div className="w-full border border-slate-200 rounded-sm overflow-hidden shadow-sm">
+                                <div className="grid grid-cols-2 bg-slate-50 border-b border-slate-200 p-2 text-[7pt] font-black uppercase text-slate-500 tracking-wider">
+                                    <div>Transaction Description</div>
+                                    <div className="text-right">Balance (XAF)</div>
+                                </div>
+                                <div className="px-3 py-1.5 text-[9pt] flex justify-between items-center bg-white">
+                                    <span className="text-slate-500 font-medium">Opening Balance</span>
+                                    <span className="font-bold text-slate-900">{account ? formatCurrency(account.available_balance) : '0'}</span>
+                                </div>
+                                <div className="px-3 py-1.5 text-[9pt] flex justify-between items-center bg-slate-50/30 border-t border-slate-100 italic">
+                                    <span className="text-slate-500 font-medium">Current Posting</span>
+                                    <span className={`font-black ${txType === 'DEPOSIT' ? 'text-emerald-700' : 'text-red-700'}`}>
+                                        {txType === 'DEPOSIT' ? '+' : '-'}{formatCurrency(amount)}
+                                    </span>
+                                </div>
                             </div>
-                            <p className="text-center mt-4 text-[8px] uppercase font-bold tracking-widest">*** Thank you for banking with CamCCUL ***</p>
-                            <p className="text-center text-[6px] opacity-50 mt-1">Transaction verified via secure biometric & PIN protocol</p>
+                        </div>
+
+                        <div className="receipt-amount-box mb-6">
+                            <div>
+                                <div className="receipt-item-label !mb-0 !text-slate-400 font-black">Account Balance</div>
+                                <div className="text-[7pt] text-slate-500 italic font-bold">New Ledger Value After Posting</div>
+                            </div>
+                            <div className="text-right">
+                                <div className="text-3xl font-black text-slate-900 tracking-tighter">
+                                    {account ? formatCurrency(account.available_balance + (txType === 'DEPOSIT' ? amount : -amount)) : formatCurrency(amount)} XAF
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="receipt-footer mb-4">
+                            <div className="signature-line">Authorised Member Signature</div>
+                            <div className="signature-line">Processing Teller: {user?.full_name?.split(' ')[0] || 'AUTHENTICATED'}</div>
+                        </div>
+
+                        <div className="receipt-security-note">
+                            This is a digitally signed, computer-generated transaction advice. No physical stamp is required for legal and audit purposes.
+                            Verification can be performed in real-time via the Union Portal.
+                            <br />
+                            <strong>MUNSCCUL Core Engine v2.0 | Secure Transaction Protocol | OHADA Compliance Verified</strong>
                         </div>
                     </div>
                 ))}

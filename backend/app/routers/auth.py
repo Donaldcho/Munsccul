@@ -198,7 +198,39 @@ async def approve_user(
         user.approval_status = models.UserApprovalStatus.APPROVED
         user.approved_by = current_user.id
         user.transaction_limit = approval.transaction_limit
-        user.is_active = True # Activating the account (Level 2)
+        # Dynamic Teller GL Account Creation
+        if user.role == models.UserRole.TELLER and not user.teller_gl_account_id:
+            parent_gl = db.query(models.GLAccount).filter(models.GLAccount.account_code == "1020").first()
+            if parent_gl:
+                # Find the next available teller code (1021, 1022, ...)
+                existing_subs = db.query(models.GLAccount).filter(
+                    models.GLAccount.account_code.startswith("102"),
+                    models.GLAccount.account_code != "1020"
+                ).all()
+                
+                next_code_int = 1021
+                if existing_subs:
+                    codes = [int(a.account_code) for a in existing_subs if a.account_code.isdigit()]
+                    if codes:
+                        next_code_int = max(codes) + 1
+                
+                next_code = str(next_code_int)
+                
+                # Create dedicated drawer account
+                new_gl = models.GLAccount(
+                    account_code=next_code,
+                    account_name=f"Cash Drawer - {user.full_name}",
+                    account_type="ASSET",
+                    account_class=1,
+                    account_category="10",
+                    usage="DETAIL",
+                    parent_id=parent_gl.id,
+                    is_active=True
+                )
+                db.add(new_gl)
+                db.flush()
+                user.teller_gl_account_id = new_gl.id
+
         action = "USER_APPROVED"
         desc = f"User {user.username} approved with limit {approval.transaction_limit} by {current_user.username}"
     else:

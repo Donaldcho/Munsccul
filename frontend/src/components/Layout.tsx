@@ -131,7 +131,7 @@ export default function Layout() {
           </div>
           <div className="h-0 flex-1 overflow-y-auto pt-5 pb-4">
             <div className="flex flex-shrink-0 items-center px-4">
-              <h1 className="text-xl font-bold text-primary-700 dark:text-indigo-300">MUNSCCUL Banking</h1>
+              <h1 className="text-xl font-bold text-primary-700 dark:text-indigo-300">Munimun Seamen's Banking</h1>
             </div>
             <nav className="mt-5 space-y-1 px-2">
               {filteredNavigation.map((item) => {

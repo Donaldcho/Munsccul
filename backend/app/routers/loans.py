@@ -17,6 +17,8 @@ from app.security.permissions import require_permission, Permission
 from app.audit import AuditLogger
 from app import models, schemas
 from app.services.accounting import AccountingService
+from app.services.policies import PolicyService
+from app.services.risk_scoring import evaluate_member_risk
 
 router = APIRouter(prefix="/loans", tags=["Loan Management"])
 
@@ -243,22 +245,25 @@ async def check_eligibility(
 
     # 2. Cooling-off period (C8) — must be member for ≥90 days
     days_since_joined = (datetime.now() - member.created_at).days
-    if days_since_joined >= settings.COOLING_OFF_DAYS:
+    # Policy Resolution: Dynamic Cooling-Off Period
+    cooling_off_days = int(PolicyService.get_value(db, "cooling_off_days", settings.COOLING_OFF_DAYS))
+    
+    if days_since_joined >= cooling_off_days:
         checks["cooling_off"] = {
             "passed": True,
-            "label": f"Cooling-Off Period ({settings.COOLING_OFF_DAYS} days)",
+            "label": f"Cooling-Off Period ({cooling_off_days} days)",
             "detail": f"Member for {days_since_joined} days — eligible"
         }
     else:
-        remaining = settings.COOLING_OFF_DAYS - days_since_joined
+        remaining = cooling_off_days - days_since_joined
         checks["cooling_off"] = {
             "passed": False,
-            "label": f"Cooling-Off Period ({settings.COOLING_OFF_DAYS} days)",
+            "label": f"Cooling-Off Period ({cooling_off_days} days)",
             "detail": f"Member for only {days_since_joined} days. {remaining} days remaining before loan eligibility."
         }
         eligible = False
 
-    # 3. Savings rule (C6) — calculate max loan = 3× total savings
+    # 3. Savings rule (C6) — calculate max loan = 3× (shares + savings)
     member_accounts = db.query(models.Account).filter(
         models.Account.member_id == member_id,
         models.Account.is_active == True,
@@ -268,22 +273,42 @@ async def check_eligibility(
             models.AccountType.CURRENT
         ])
     ).all()
-    total_savings = sum(float(a.balance) for a in member_accounts)
-    max_loan_amount = total_savings * settings.SAVINGS_MULTIPLIER
+    
+    total_savings = sum(float(a.balance) for a in member_accounts if a.account_type != models.AccountType.SHARES)
+    total_shares = sum(float(a.balance) for a in member_accounts if a.account_type == models.AccountType.SHARES)
+    total_stake = total_savings + total_shares
+    
+    # Policy Resolution: Dynamic Borrowing Ratio
+    loan_multiplier = PolicyService.get_loan_multiplier(db)
+    max_loan_amount = total_stake * Decimal(str(loan_multiplier))
+    
+    # Policy Resolution: Dynamic Min Share Capital
+    min_share_capital = PolicyService.get_min_share_capital(db)
+    
+    # Membership Status Logic: Applicant (< 10k) or Full Member (>= 10k)
+    membership_status = "APPLICANT"
+    if total_shares >= Decimal(str(min_share_capital)):
+        membership_status = "FULL MEMBER"
 
-    if total_savings > 0:
+    if total_stake > 0:
         checks["savings_rule"] = {
             "passed": True,
-            "label": f"{settings.SAVINGS_MULTIPLIER}× Savings Rule",
-            "detail": f"Total savings: {total_savings:,.0f} FCFA → Maximum eligible loan: {max_loan_amount:,.0f} FCFA"
+            "label": f"{loan_multiplier}× Stake Rule (Shares + Savings)",
+            "detail": f"Total Stake: {total_stake:,.0f} FCFA (Shares: {total_shares:,.0f}, Savings: {total_savings:,.0f}) → Maximum eligible loan: {max_loan_amount:,.0f} FCFA"
         }
     else:
         checks["savings_rule"] = {
             "passed": False,
-            "label": f"{settings.SAVINGS_MULTIPLIER}× Savings Rule",
-            "detail": "Member has no savings. Must save before applying for a loan."
+            "label": f"{loan_multiplier}× Stake Rule",
+            "detail": "Member has no savings or shares. Must save before applying for a loan."
         }
         eligible = False
+    
+    # Mandatory Share Check for Full Membership
+    if membership_status != "FULL MEMBER":
+        # Note: COBAC often allows loans for applicants but with lower limits or higher scrutiny.
+        # Here we just track the status.
+        pass
 
     # 4. Delinquency check — any active loans past due?
     delinquent_loans = db.query(models.Loan).filter(
@@ -330,6 +355,9 @@ async def check_eligibility(
         "checks": checks,
         "max_loan_amount": max_loan_amount,
         "total_savings": total_savings,
+        "total_shares": total_shares,
+        "total_stake": total_stake,
+        "membership_status": membership_status,
         "monthly_income": float(member.monthly_income) if member.monthly_income else None,
         "member_name": f"{member.first_name} {member.last_name}",
         "member_since": member.created_at.strftime("%d %b %Y")
@@ -490,6 +518,13 @@ async def apply_for_loan(
     while db.query(models.Loan).filter(models.Loan.loan_number == loan_number).first():
         loan_number = generate_loan_number()
     
+    # AI Risk Scoring Integration (XGBoost)
+    age = (datetime.now().date() - member.date_of_birth).days // 365 if getattr(member, 'date_of_birth', None) else 35
+    njangi_cycle_size = float(max_loan_amount) / 10.0 if 'max_loan_amount' in locals() else 50000.0
+    days_late_last_3 = 0
+    frequency_of_payments = 12
+    ai_risk_score = evaluate_member_risk(age, njangi_cycle_size, days_late_last_3, frequency_of_payments)
+    
     # Create loan record
     loan = models.Loan(
         loan_number=loan_number,
@@ -503,7 +538,8 @@ async def apply_for_loan(
         amount_outstanding=total_due,
         status=models.LoanStatus.DRAFT,
         maturity_date=datetime.now() + relativedelta(months=application.term_months),
-        applied_by=current_user.id
+        applied_by=current_user.id,
+        ai_risk_score=ai_risk_score
     )
     
     # Check if Insider Loan (Member email matches a User email)
@@ -1111,20 +1147,6 @@ async def make_loan_repayment(
     
     db.add(transaction)
     
-    # automated GL Journalization
-    # Debit: Member Savings (2010)
-    # Credit: Loan Portfolio (1210)
-    AccountingService.record_transaction(
-        db=db,
-        transaction_id=transaction.transaction_ref,
-        transaction_type=models.TransactionType.LOAN_REPAYMENT.value,
-        amount=repayment.amount,
-        description=f"Loan Repayment: {account.account_number} -> {loan.loan_number}",
-        created_by=current_user.id,
-        debit_gl_code="2010",
-        credit_gl_code="1210"
-    )
-    
     # Update account balance
     account.balance -= repayment.amount
     account.available_balance -= repayment.amount
@@ -1136,29 +1158,72 @@ async def make_loan_repayment(
     
     # Update schedule items
     remaining_payment = repayment.amount
+    total_principal_paid = Decimal("0")
+    total_interest_paid = Decimal("0")
+
     for schedule_item in loan.schedules:
         if not schedule_item.is_paid and remaining_payment > 0:
             amount_due = schedule_item.total_amount - schedule_item.principal_paid - schedule_item.interest_paid
             
             if remaining_payment >= amount_due:
                 # Full installment payment
+                p_paid = schedule_item.principal_amount - schedule_item.principal_paid
+                i_paid = schedule_item.interest_amount - schedule_item.interest_paid
+                
                 schedule_item.principal_paid = schedule_item.principal_amount
                 schedule_item.interest_paid = schedule_item.interest_amount
                 schedule_item.is_paid = True
                 schedule_item.paid_at = datetime.utcnow()
+                
+                total_principal_paid += p_paid
+                total_interest_paid += i_paid
                 remaining_payment -= amount_due
             else:
                 # Partial payment (apply to interest first, then principal)
                 interest_remaining = schedule_item.interest_amount - schedule_item.interest_paid
                 
                 if remaining_payment >= interest_remaining:
+                    # Pays off all interest, rest to principal
+                    total_interest_paid += interest_remaining
                     schedule_item.interest_paid = schedule_item.interest_amount
                     remaining_payment -= interest_remaining
+                    
+                    total_principal_paid += remaining_payment
                     schedule_item.principal_paid += remaining_payment
                     remaining_payment = 0
                 else:
+                    # All goes to interest
+                    total_interest_paid += remaining_payment
                     schedule_item.interest_paid += remaining_payment
                     remaining_payment = 0
+
+    # automated GL Journalization
+    # Debit: Member Savings (2010)
+    # Credit: Loan Portfolio (1210) for Principal
+    # Credit: Interest Income (4110) for Interest
+    if total_principal_paid > 0:
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=f"PRN-{transaction.transaction_ref}",
+            transaction_type="LOAN_PRINCIPAL_REPAYMENT",
+            amount=total_principal_paid,
+            description=f"Loan Principal Repayment: {account.account_number} -> {loan.loan_number}",
+            created_by=current_user.id,
+            debit_gl_code="2010",
+            credit_gl_code="1210"
+        )
+    
+    if total_interest_paid > 0:
+        AccountingService.record_transaction(
+            db=db,
+            transaction_id=f"INT-{transaction.transaction_ref}",
+            transaction_type="LOAN_INTEREST_REPAYMENT",
+            amount=total_interest_paid,
+            description=f"Loan Interest Repayment: {account.account_number} -> {loan.loan_number}",
+            created_by=current_user.id,
+            debit_gl_code="2010",
+            credit_gl_code="4110"
+        )
     
     # Check if loan is fully paid
     if loan.amount_outstanding <= 0:

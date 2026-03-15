@@ -14,6 +14,7 @@ class IntercomEntityType(str, Enum):
     MEMBER_PROFILE = "MEMBER_PROFILE"
     LOAN_APP = "LOAN_APP"
     NJANGI_GROUP = "NJANGI_GROUP"
+    VOICE_SIGNAL = "VOICE_SIGNAL"
 
 class QueueServiceType(str, Enum):
     CASH = "CASH"
@@ -57,6 +58,8 @@ class TransactionType(str, Enum):
     INTEREST = "INTEREST"
     NJANGI_CONTRIBUTION = "NJANGI_CONTRIBUTION"
     NJANGI_PAYOUT = "NJANGI_PAYOUT"
+    SHARE_PURCHASE = "SHARE_PURCHASE"
+    ENTRANCE_FEE = "ENTRANCE_FEE"
 
 
 class VaultTransferType(str, Enum):
@@ -143,6 +146,12 @@ class ContributionStatus(str, Enum):
     PAID_ON_TIME = "PAID_ON_TIME"
     PAID_LATE = "PAID_LATE"
     MISSED = "MISSED"
+class OnboardPaymentRequest(BaseModel):
+    member_id: int
+    shares_amount: Decimal = Field(..., gt=0)
+    fee_amount: Decimal = Field(..., gt=0)
+    payment_channel: PaymentChannel = PaymentChannel.CASH
+    description: Optional[str] = None
 
 
 class PayoutStatus(str, Enum):
@@ -356,6 +365,10 @@ class MemberResponse(MemberBase):
     
     created_at: datetime
     updated_at: datetime
+    
+    # Computed Fields
+    total_stake: Optional[Decimal] = Decimal("0.00")
+    membership_status: Optional[str] = "APPLICANT"
     
     class Config:
         from_attributes = True
@@ -590,6 +603,7 @@ class LoanResponse(BaseModel):
     board_approval_1_by: Optional[int]
     board_approval_2_by: Optional[int]
     is_insider_loan: bool
+    ai_risk_score: Optional[float] = None
     
     class Config:
         from_attributes = True
@@ -828,6 +842,7 @@ class VaultTransferRequestData(BaseModel):
     description: Optional[str] = None
     source_treasury_id: Optional[int] = None
     destination_treasury_id: Optional[int] = None
+    teller_id: Optional[int] = None
 
 
 class VaultTransferApprovalReq(BaseModel):
@@ -978,6 +993,46 @@ class NjangiAIInsightResponse(BaseModel):
 class NjangiReadinessResponse(BaseModel):
     member_id: int
     readiness_score: float
+
+
+# ============== POLICY & GOVERNANCE SCHEMAS ==============
+
+class PolicyBase(BaseModel):
+    policy_key: str
+    policy_value: str
+    effective_date: Optional[datetime] = None
+
+    @validator('effective_date', pre=True)
+    def parse_date(cls, v):
+        if isinstance(v, str):
+            if not v:
+                return None
+            try:
+                # Handle ISO format from new Date().toISOString()
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except ValueError:
+                # Fallback for plain YYYY-MM-DD
+                try:
+                    return datetime.strptime(v, "%Y-%m-%d")
+                except ValueError:
+                    return None
+        return v
+
+class PolicyProposalCreate(PolicyBase):
+    change_reason: str
+
+class PolicyResponse(PolicyBase):
+    id: int
     status: str
-    avg_trust_score: float
-    total_on_time_streak: int
+    version: int
+    proposed_by_id: int
+    approved_by_id: Optional[int] = None
+    change_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class PolicyApprovalRequest(BaseModel):
+    reason: Optional[str] = None

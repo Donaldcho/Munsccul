@@ -38,6 +38,8 @@ interface MemberDetail {
   created_at: string
   passport_photo_path: string | null
   signature_scan_path: string | null
+  total_stake: number
+  membership_status: string
   accounts: any[]
   loans: any[]
 }
@@ -244,6 +246,15 @@ export default function MemberDetail() {
             <p className="text-sm text-gray-500 dark:text-slate-400">
               Member ID: {member.member_id} • Joined {formatDate(member.created_at)}
             </p>
+            <div className="flex items-center gap-2 mt-1">
+              <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${member.membership_status === 'FULL MEMBER' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'}`}>
+                {member.membership_status}
+              </span>
+              <span className="text-xs text-gray-400 dark:text-slate-500">•</span>
+              <span className="text-xs font-semibold text-primary-600 dark:text-primary-400">
+                Total Stake: {formatCurrency(member.total_stake)}
+              </span>
+            </div>
           </div>
           <div className="ml-auto flex items-center gap-3">
             <button
@@ -298,11 +309,13 @@ export default function MemberDetail() {
                   <option value="SAVINGS">Savings Account</option>
                   <option value="CURRENT">Current Account</option>
                   <option value="FIXED_DEPOSIT">Fixed Deposit</option>
+                  <option value="SHARES">Member Share Account</option>
                 </select>
                 <p className="mt-1 text-xs text-gray-400 dark:text-slate-500">
                   {accountForm.account_type === 'SAVINGS' && 'Standard savings with interest earnings.'}
                   {accountForm.account_type === 'CURRENT' && 'Transactional account for frequent withdrawals.'}
                   {accountForm.account_type === 'FIXED_DEPOSIT' && 'Locked deposit with higher interest rate.'}
+                  {accountForm.account_type === 'SHARES' && 'Mandatory share capital (Min 10,000 XAF for full status). Non-withdrawable.'}
                 </p>
               </div>
 

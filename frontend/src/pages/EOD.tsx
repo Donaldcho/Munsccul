@@ -39,7 +39,7 @@ const EODOperations: React.FC = () => {
 
         try {
             setRunning(true);
-            const response = await eodApi.start();
+            const response = await eodApi.finalize();
             toast.success(response.data.message);
             fetchStatus(); // Refresh status after successful close
         } catch (error: any) {

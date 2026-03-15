@@ -1,22 +1,22 @@
 import { useState, useEffect, useRef } from 'react'
 import {
   InboxIcon,
-  ExclamationTriangleIcon,
-  DocumentTextIcon,
   UserGroupIcon,
   BanknotesIcon,
   ShieldExclamationIcon,
   ArrowTrendingUpIcon,
   LockClosedIcon,
   CheckCircleIcon,
-  XCircleIcon,
+  SparklesIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline'
-import { usersApi, loansApi, transactionsApi, reportsApi, opsApi, eodApi, treasuryApi } from '../../services/api'
+import { usersApi, loansApi, reportsApi, opsApi, treasuryApi } from '../../services/api'
 import { njangiApi } from '../../services/njangiApi'
 import { useAuthStore } from '../../stores/authStore'
 import { formatCurrency } from '../../utils/formatters'
 import { getErrorMessage } from '../../utils/errorUtils'
 import toast from 'react-hot-toast'
+import SystemInitWizard from './SystemInitWizard'
 
 interface OverrideRequest {
   id: number
@@ -49,6 +49,7 @@ export default function OpsManagerDashboard() {
   const [showAdjustmentModal, setShowAdjustmentModal] = useState(false)
   const [adjustmentAmount, setAdjustmentAmount] = useState('')
   const [adjustmentDesc, setAdjustmentDesc] = useState('Opening Vault Balance Adjustment')
+  const [showSyncWizard, setShowSyncWizard] = useState(false)
 
   const [overrideModal, setOverrideModal] = useState<OverrideRequest | null>(null)
   const [overrideAction, setOverrideAction] = useState<'APPROVE' | 'REJECT'>('APPROVE')
@@ -257,10 +258,10 @@ export default function OpsManagerDashboard() {
         <div className="flex items-center gap-2">
           {user?.role === 'OPS_MANAGER' && (
             <button
-              onClick={() => setShowAdjustmentModal(true)}
-              className="px-3 py-1.5 bg-purple-600 text-white text-xs font-bold rounded-lg hover:bg-purple-700 transition shadow-sm flex items-center gap-1"
+              onClick={() => setShowSyncWizard(true)}
+              className="px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-blue-600 text-white text-xs font-bold rounded-lg hover:from-indigo-700 hover:to-blue-700 transition shadow-sm flex items-center gap-1.5"
             >
-              <ArrowTrendingUpIcon className="h-4 w-4" /> Genesis Injection
+              <SparklesIcon className="h-4 w-4" /> System Sync Wizard
             </button>
           )}
           {eodLocked && (
@@ -449,12 +450,20 @@ export default function OpsManagerDashboard() {
                 <p className="text-sm text-gray-600 dark:text-slate-400">MTN MoMo: {formatCurrency(liquidity?.momo?.MTN_MOMO ?? 0)}</p>
                 <p className="text-sm text-gray-600 dark:text-slate-400">Orange Money: {formatCurrency(liquidity?.momo?.ORANGE_MONEY ?? 0)}</p>
               </div>
-              <button
-                onClick={() => { setVaultDropModal(true); fetchLiquidity(); }}
-                className="w-full py-2 bg-primary-600 text-white rounded-xl text-sm font-bold hover:bg-primary-700"
-              >
-                Vault Drop
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => { setVaultDropModal(true); fetchLiquidity(); }}
+                  className="py-2 bg-primary-600 text-white rounded-xl text-sm font-bold hover:bg-primary-700"
+                >
+                  Vault Drop
+                </button>
+                <button
+                  onClick={() => setShowAdjustmentModal(true)}
+                  className="py-2 bg-purple-600 text-white rounded-xl text-sm font-bold hover:bg-purple-700"
+                >
+                  Genesis Injection
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -651,6 +660,21 @@ export default function OpsManagerDashboard() {
               </button>
               <button onClick={() => { setTransferModal(null); setTransferPin(''); }} className="py-2 px-4 text-gray-500 font-medium text-xs">Cancel</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* System Initialization Wizard Modal */}
+      {showSyncWizard && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-start justify-center overflow-y-auto p-4 pt-8">
+          <div className="w-full max-w-3xl relative">
+            <button
+              onClick={() => setShowSyncWizard(false)}
+              className="absolute -top-3 -right-3 z-10 bg-white dark:bg-gray-800 rounded-full p-2 shadow-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50"
+            >
+              <XMarkIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+            </button>
+            <SystemInitWizard onComplete={() => { setShowSyncWizard(false); fetchLiquidity() }} />
           </div>
         </div>
       )}

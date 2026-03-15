@@ -23,6 +23,8 @@ import { format } from 'date-fns'
 import LoanProductsConfig from './LoanProductsConfig'
 import EODWizard from './EODWizard'
 import TreasuryTransferModal from './TreasuryTransferModal'
+import SystemInitWizard from './SystemInitWizard'
+import { SparklesIcon, XMarkIcon } from '@heroicons/react/24/outline'
 
 interface OverrideRequest {
     id: number
@@ -52,6 +54,7 @@ export default function ManagerDashboard() {
     // Zone 3: Health & Queue
     const [queueStats, setQueueStats] = useState<any>(null)
     const [branchStatus, setBranchStatus] = useState<string>('OPEN')
+    const [globalStats, setGlobalStats] = useState<any>(null)
 
     // State UI
     const [loading, setLoading] = useState(true)
@@ -61,6 +64,10 @@ export default function ManagerDashboard() {
     const [overrideModal, setOverrideModal] = useState<OverrideRequest | null>(null)
     const [overrideAction, setOverrideAction] = useState<'APPROVE' | 'REJECT'>('APPROVE')
     const [managerPin, setManagerPin] = useState('')
+    const [showSyncWizard, setShowSyncWizard] = useState(false)
+    const [showAdjustmentModal, setShowAdjustmentModal] = useState(false)
+    const [adjustmentAmount, setAdjustmentAmount] = useState('')
+    const [adjustmentDesc, setAdjustmentDesc] = useState('Genesis Vault Injection')
     const [limit, setLimit] = useState(0)
     const [selectedUser, setSelectedUser] = useState<any>(null)
     const [transferModal, setTransferModal] = useState<any>(null)
@@ -70,14 +77,15 @@ export default function ManagerDashboard() {
 
     const fetchAllData = async () => {
         try {
-            const [usersRes, loansRes, overridesRes, liqRes, qRes, eodRes, treasuryRes] = await Promise.all([
+            const [usersRes, loansRes, overridesRes, liqRes, qRes, eodRes, treasuryRes, globalRes] = await Promise.all([
                 usersApi.getAll(),
                 loansApi.getAll({ status: 'PENDING_REVIEW' }),
                 opsApi.getOverrideRequests({ branch_id: branchId }),
                 opsApi.getLiquidity(branchId),
                 queueApi.getStats().catch(() => ({ data: null })),
                 eodApi.getStatus(),
-                treasuryApi.getPendingTransfers().catch(() => ({ data: [] }))
+                treasuryApi.getPendingTransfers().catch(() => ({ data: [] })),
+                reportsApi.getDashboard().catch(() => ({ data: null }))
             ])
 
             setPendingUsers(usersRes.data.filter((u: any) => u.approval_status === 'PENDING') || [])
@@ -87,6 +95,7 @@ export default function ManagerDashboard() {
             setQueueStats(qRes.data || null)
             setBranchStatus(eodRes.data?.is_closed ? 'CLOSED' : (eodRes.data?.eod_locked ? 'EOD_IN_PROGRESS' : 'OPEN'))
             setPendingTransfers(treasuryRes.data || [])
+            setGlobalStats(globalRes?.data || null)
 
             // Fetch Liquidity Ratio
             try {
@@ -198,6 +207,25 @@ export default function ManagerDashboard() {
         }
     }
 
+    const handleVaultAdjustment = async () => {
+        if (!adjustmentAmount) {
+            toast.error('Enter amount')
+            return
+        }
+        try {
+            await treasuryApi.vaultAdjustment({
+                amount: parseFloat(adjustmentAmount),
+                description: adjustmentDesc
+            })
+            toast.success('Vault Adjustment Successful')
+            setShowAdjustmentModal(false)
+            setAdjustmentAmount('')
+            fetchAllData()
+        } catch (e: any) {
+            toast.error(getErrorMessage(e, 'Adjustment failed'))
+        }
+    }
+
     if (loading) return <div className="flex items-center justify-center h-screen bg-slate-50 dark:bg-slate-950"><ArrowPathIcon className="h-12 w-12 animate-spin text-primary-600" /></div>
 
     return (
@@ -215,6 +243,14 @@ export default function ManagerDashboard() {
                             className="p-3 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 hover:shadow-lg transition-all"
                         >
                             <Cog6ToothIcon className="h-6 w-6 text-slate-600" />
+                        </button>
+                    )}
+                    {['OPS_MANAGER', 'OPS_DIRECTOR', 'SYSTEM_ADMIN'].includes(user?.role || '') && (
+                        <button
+                            onClick={() => setShowSyncWizard(true)}
+                            className="px-4 py-3 bg-gradient-to-r from-indigo-600 to-blue-600 text-white text-sm font-black rounded-2xl hover:from-indigo-700 hover:to-blue-700 transition shadow-xl shadow-indigo-500/10 flex items-center gap-2"
+                        >
+                            <SparklesIcon className="h-5 w-5" /> System Sync
                         </button>
                     )}
                     {['OPS_MANAGER', 'OPS_DIRECTOR', 'SYSTEM_ADMIN'].includes(user?.role || '') && (
@@ -375,11 +411,17 @@ export default function ManagerDashboard() {
                                 <div className="flex items-center gap-2">
                                     <button
                                         onClick={() => setShowTreasuryModal(true)}
-                                        className="text-xs font-bold bg-green-600 text-white px-3 py-1.5 rounded-lg hover:bg-green-700 shadow shadow-green-500/20"
+                                        className="text-[10px] font-bold bg-green-600 text-white px-2 py-1 rounded-lg hover:bg-green-700 shadow shadow-green-500/20"
                                     >
                                         Move Funds
                                     </button>
-                                    <button onClick={fetchAllData} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+                                    <button
+                                        onClick={() => setShowAdjustmentModal(true)}
+                                        className="text-[10px] font-bold bg-purple-600 text-white px-2 py-1 rounded-lg hover:bg-purple-700 shadow shadow-purple-500/20"
+                                    >
+                                        Inject Vault
+                                    </button>
+                                    <button onClick={fetchAllData} className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
                                         <ArrowPathIcon className="h-4 w-4 text-slate-400" />
                                     </button>
                                 </div>
@@ -388,6 +430,11 @@ export default function ManagerDashboard() {
                                 <div className="p-8 bg-slate-900 dark:bg-indigo-950 rounded-[2rem] text-white shadow-2xl shadow-indigo-500/10">
                                     <p className="text-[10px] font-black uppercase text-indigo-300 tracking-widest mb-1">Total Liquidity Pool</p>
                                     <p className="text-4xl font-black tracking-tighter">{formatCurrency(liquidity?.total_liquidity || 0)}</p>
+                                </div>
+
+                                <div className="p-6 bg-emerald-950/40 rounded-[2rem] border border-emerald-500/20 text-emerald-400">
+                                    <p className="text-[10px] font-black uppercase tracking-widest mb-1 opacity-70">Stable Capital (Shares)</p>
+                                    <p className="text-2xl font-black tracking-tighter">{formatCurrency(globalStats?.capital_adequacy?.total_shares || 0)}</p>
                                 </div>
 
                                 {liquidity?.categories?.map((category: any) => (
@@ -595,6 +642,61 @@ export default function ManagerDashboard() {
                     fetchAllData();
                 }}
             />
+
+            {/* Genesis Injection Modal */}
+            {showAdjustmentModal && (
+                <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+                    <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] shadow-2xl max-w-sm w-full p-10 border border-slate-200 dark:border-slate-800">
+                        <div className="h-16 w-16 bg-purple-100 rounded-3xl flex items-center justify-center mb-6">
+                            <BanknotesIcon className="h-8 w-8 text-purple-600" />
+                        </div>
+                        <h3 className="text-2xl font-black text-slate-900 dark:text-white mb-2">Genesis Injection</h3>
+                        <p className="text-slate-500 text-sm mb-8">Set the initial physical cash balance against Retained Earnings (Capital).</p>
+
+                        <div className="space-y-6">
+                            <div>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Amount (FCFA)</label>
+                                <input
+                                    type="number"
+                                    placeholder="5,000,000"
+                                    className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl p-5 font-black text-xl"
+                                    value={adjustmentAmount}
+                                    onChange={e => setAdjustmentAmount(e.target.value)}
+                                />
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">Description</label>
+                                <textarea
+                                    className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl p-4 text-sm"
+                                    value={adjustmentDesc}
+                                    onChange={e => setAdjustmentDesc(e.target.value)}
+                                    rows={2}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="flex gap-4 mt-8">
+                            <button onClick={() => setShowAdjustmentModal(false)} className="flex-1 py-4 font-black text-slate-400 uppercase text-xs">Cancel</button>
+                            <button onClick={handleVaultAdjustment} className="flex-1 bg-purple-600 text-white rounded-[1.5rem] font-black py-4 shadow-xl shadow-purple-600/20">INJECT CAPITAL</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* System Sync Wizard Modal */}
+            {showSyncWizard && (
+                <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm z-[150] flex items-start justify-center overflow-y-auto p-4 pt-12">
+                    <div className="w-full max-w-3xl relative animate-in zoom-in-95 duration-300">
+                        <button
+                            onClick={() => setShowSyncWizard(false)}
+                            className="absolute -top-4 -right-4 z-[160] bg-white dark:bg-slate-800 rounded-full p-3 shadow-2xl border border-slate-200 dark:border-slate-700 hover:rotate-90 transition-all"
+                        >
+                            <XMarkIcon className="w-6 h-6 text-slate-600 dark:text-slate-400" />
+                        </button>
+                        <SystemInitWizard onComplete={() => { setShowSyncWizard(false); fetchAllData() }} />
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
